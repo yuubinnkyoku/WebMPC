@@ -9,7 +9,7 @@ import { MidiMonitor } from "./MidiMonitor";
 
 type Props = {
   pads: Pad[];
-  onRefresh: () => Promise<void>;
+  onRefresh: (projectId?: string) => Promise<void>;
 };
 
 export function MidiPanel({ pads, onRefresh }: Props) {
@@ -61,6 +61,12 @@ export function MidiPanel({ pads, onRefresh }: Props) {
   useEffect(() => {
     return midiService.subscribe((message) => void handleMidi(message));
   }, [handleMidi]);
+
+  useEffect(() => {
+    return midiService.subscribeInputs((inputs) => {
+      setMidi(midiService.enabled, inputs.map((input) => input.name ?? input.id));
+    });
+  }, [setMidi]);
 
   async function enable() {
     try {

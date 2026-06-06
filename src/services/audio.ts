@@ -1,5 +1,5 @@
 import type { Pad, Sample } from "../types/models";
-import { getSampleBlob } from "./storage";
+import { getSampleBlob, updateSampleDuration } from "./storage";
 
 type LoadedSample = {
   sample: Sample;
@@ -46,6 +46,13 @@ class AudioEngine {
     return this.state;
   }
 
+  setMasterGain(value: number): void {
+    const gain = Math.max(0, Math.min(1, value));
+    if (this.master) {
+      this.master.gain.value = gain;
+    }
+  }
+
   async loadSample(sample: Sample): Promise<void> {
     if (!this.context) {
       throw new Error("Start audio before loading samples.");
@@ -56,6 +63,7 @@ class AudioEngine {
     }
     const buffer = await this.context.decodeAudioData(await blob.arrayBuffer());
     this.samples.set(sample.id, { sample, buffer });
+    await updateSampleDuration(sample.id, Math.round(buffer.duration * 1000));
     this.postSampleToWorklet(sample.id, buffer);
   }
 
@@ -64,12 +72,12 @@ class AudioEngine {
   }
 
   async decodeDurationMs(file: File): Promise<number | undefined> {
-    const temporaryContext = this.context ?? new AudioContext();
+    if (!this.context) return undefined;
     try {
-      const buffer = await temporaryContext.decodeAudioData(await file.arrayBuffer());
+      const buffer = await this.context.decodeAudioData(await file.arrayBuffer());
       return Math.round(buffer.duration * 1000);
-    } finally {
-      if (!this.context) await temporaryContext.close();
+    } catch {
+      return undefined;
     }
   }
 

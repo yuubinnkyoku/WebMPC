@@ -17,11 +17,11 @@ export default function App() {
 
   const currentProject = useMemo(() => projects.find((project) => project.id === currentProjectId), [currentProjectId, projects]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (preferredProjectId?: string) => {
     const nextProjects = await listProjects();
     setProjects(nextProjects);
-    const selectedId = currentProjectId ?? nextProjects[0]?.id;
-    if (!currentProjectId && selectedId) setCurrentProjectId(selectedId);
+    const selectedId = preferredProjectId ?? currentProjectId ?? nextProjects[0]?.id;
+    if (selectedId && selectedId !== currentProjectId) setCurrentProjectId(selectedId);
     if (selectedId) {
       const [project, nextPads, nextSamples] = await Promise.all([getProject(selectedId), getPads(selectedId), getSamples(selectedId)]);
       if (!project) return;
@@ -35,7 +35,7 @@ export default function App() {
   }, [currentProjectId, setCurrentProjectId]);
 
   useEffect(() => {
-    void ensureDefaultMapping().then(refresh).catch((error: unknown) => {
+    void ensureDefaultMapping().then(() => refresh()).catch((error: unknown) => {
       setError(error instanceof Error ? error.message : "Unable to initialize app.");
       setLoading(false);
     });

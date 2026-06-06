@@ -122,6 +122,17 @@ aside,
   gap: 12px;
 }
 
+.project-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) 88px;
+  gap: 10px;
+  align-items: end;
+}
+
+.compact-field {
+  margin-top: 0;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(360px, 1fr) minmax(320px, 420px);
@@ -221,6 +232,42 @@ aside,
   font-size: 13px;
 }
 
+.sample-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  border: 1px solid #293138;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.mapping-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  border: 1px solid #293138;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.mapping-status span {
+  color: #a9b5bd;
+  font-size: 12px;
+  text-align: right;
+}
+
+.sample-meta span {
+  color: #a9b5bd;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.subheading {
+  margin-top: 16px;
+}
+
 .control-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -274,6 +321,33 @@ aside,
   border-bottom: 0;
 }
 
+.remote-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.remote-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #293138;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.remote-row div {
+  min-width: 0;
+}
+
+.remote-row strong,
+.remote-row small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .error {
   margin: 16px 16px 0;
   border-color: #e86f68;
@@ -308,7 +382,8 @@ aside,
   }
 
   .control-grid,
-  .inline-form {
+  .inline-form,
+  .project-fields {
     grid-template-columns: 1fr;
     flex-direction: column;
   }

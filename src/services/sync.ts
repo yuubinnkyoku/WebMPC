@@ -1,7 +1,7 @@
 import PocketBase, { type RecordModel } from "pocketbase";
 import type { Pad, Project, Sample } from "../types/models";
 import { makeId } from "../utils/id";
-import { db, getPads, getSamples, replaceProjectBundle } from "./storage";
+import { db, getPads, getSamples, replaceProjectBundle, saveSyncMetadata } from "./storage";
 
 export type SyncState = {
   configured: boolean;
@@ -61,10 +61,28 @@ export async function syncProject(projectId: string): Promise<SyncState> {
   const samples = await getSamples(projectId);
   const payload = { project, pads, samples };
   const remoteId = project.remoteId;
+  if (remoteId) {
+    const remote = await pb.collection<RemoteProjectRecord>("webmpc_projects").getOne(remoteId).catch(() => undefined);
+    const remoteUpdatedAt = remote?.project?.updatedAt;
+    if (remoteUpdatedAt && remoteUpdatedAt > project.updatedAt) {
+      await saveSyncMetadata({
+        projectId,
+        remoteId,
+        remoteUpdatedAt
+      });
+      return { ...getSyncState(), message: "Remote project is newer. Use Load remote and Restore to keep both copies." };
+    }
+  }
   const record = remoteId
     ? await pb.collection("webmpc_projects").update(remoteId, payload)
     : await pb.collection("webmpc_projects").create(payload);
   await db.projects.put({ ...project, remoteId: record.id, updatedAt: Date.now() });
+  await saveSyncMetadata({
+    projectId,
+    remoteId: record.id,
+    lastSyncedAt: Date.now(),
+    remoteUpdatedAt: Date.parse(record.updated)
+  });
   await uploadSampleFiles(record.id, samples);
   return { ...getSyncState(), message: `Synced ${project.name}` };
 }
@@ -131,6 +149,12 @@ export async function restoreRemoteProject(remoteId: string): Promise<Project> {
   }));
 
   await replaceProjectBundle(project, pads, samples, []);
+  await saveSyncMetadata({
+    projectId: project.id,
+    remoteId: record.id,
+    lastSyncedAt: now,
+    remoteUpdatedAt: Date.parse(record.updated)
+  });
   return project;
 }
 

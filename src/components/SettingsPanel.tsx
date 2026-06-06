@@ -1,23 +1,30 @@
 import { downloadProject, importProjectFile } from "../services/exportImport";
+import { audioEngine } from "../services/audio";
 import { useAppStore } from "../store/useAppStore";
+import { useState } from "react";
 
 type Props = {
   projectId?: string;
-  onRefresh: () => Promise<void>;
+  onRefresh: (projectId?: string) => Promise<void>;
 };
 
 export function SettingsPanel({ projectId, onRefresh }: Props) {
+  const masterGain = useAppStore((state) => state.settings.masterGain);
+  const setMasterGain = useAppStore((state) => state.setMasterGain);
   const setCurrentProjectId = useAppStore((state) => state.setCurrentProjectId);
   const setError = useAppStore((state) => state.setError);
+  const [toolStatus, setToolStatus] = useState("Ready");
 
   async function importFile(file?: File) {
     if (!file) return;
     try {
       const project = await importProjectFile(file);
       setCurrentProjectId(project.id);
-      await onRefresh();
+      await onRefresh(project.id);
+      setToolStatus(`Imported ${project.name}`);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to import project.");
+      setToolStatus("Import failed");
     }
   }
 
@@ -25,21 +32,41 @@ export function SettingsPanel({ projectId, onRefresh }: Props) {
     if (!projectId) return;
     try {
       await downloadProject(projectId);
+      setToolStatus("Export created");
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to export project.");
+      setToolStatus("Export failed");
     }
   }
 
   return (
     <section className="panel">
-      <h2>Import / Export</h2>
+      <h2>Settings</h2>
+      <label className="field">
+        Master gain
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={masterGain}
+          onChange={(event) => {
+            const value = Number(event.target.value);
+            setMasterGain(value);
+            audioEngine.setMasterGain(value);
+          }}
+        />
+      </label>
+      <p>{Math.round(masterGain * 100)}%</p>
+      <h2 className="subheading">Import / Export</h2>
       <div className="button-row">
-        <button disabled={!projectId} onClick={() => void exportCurrent()}>Export project</button>
+        <button disabled={!projectId} onClick={() => void exportCurrent()} aria-label="Export current project">Export project</button>
         <label className="file-button">
           Import project
-          <input type="file" accept=".json,.webmpc.json,application/json" onChange={(event) => void importFile(event.target.files?.[0])} />
+          <input aria-label="Import project bundle" type="file" accept=".json,.webmpc.json,application/json" onChange={(event) => void importFile(event.target.files?.[0])} />
         </label>
       </div>
+      <p aria-live="polite">{toolStatus}</p>
     </section>
   );
 }

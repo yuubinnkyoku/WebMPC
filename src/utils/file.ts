@@ -1,10 +1,5 @@
 export function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
+  return blob.arrayBuffer().then((buffer) => `data:${blob.type || "application/octet-stream"};base64,${arrayBufferToBase64(buffer)}`);
 }
 
 export async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
@@ -20,4 +15,13 @@ export function downloadJson(filename: string, data: unknown): void {
   anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
 }

@@ -6,8 +6,6 @@ services:
         VITE_POCKETBASE_URL: ${VITE_POCKETBASE_URL:-http://127.0.0.1:8090}
     ports:
       - "8080:80"
-    environment:
-      - VITE_POCKETBASE_URL=http://127.0.0.1:8090
     depends_on:
       - pocketbase
 

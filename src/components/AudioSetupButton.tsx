@@ -7,6 +7,7 @@ type Props = {
 
 export function AudioSetupButton({ onReady }: Props) {
   const audio = useAppStore((state) => state.audio);
+  const masterGain = useAppStore((state) => state.settings.masterGain);
   const setAudio = useAppStore((state) => state.setAudio);
   const setError = useAppStore((state) => state.setError);
 
@@ -14,6 +15,7 @@ export function AudioSetupButton({ onReady }: Props) {
     try {
       setError(undefined);
       const state = await audioEngine.start();
+      audioEngine.setMasterGain(masterGain);
       setAudio(state);
       await onReady();
     } catch (error) {

@@ -22,18 +22,20 @@ Open the printed local URL in Chrome. Use `bun run typecheck`, `bun run build`, 
 
 ## Basic Flow
 
-1. Click `Start Audio`. Chrome requires AudioContext startup from a user gesture.
+1. Click `Start Audio`. Chrome requires AudioContext startup from a user gesture, and WebMPC does not create one before this action.
 2. Create a project.
-3. Import a WAV, MP3, or OGG sample.
-4. Select a pad and assign the sample.
-5. Click or tap the pad to play.
-6. Enable MIDI and grant browser permission.
-7. Hit an MPD218 pad. Bank A uses notes 36-51 by default.
-8. Use MIDI Learn on a selected pad if your controller sends different notes.
+3. Edit the project name or BPM from the project header when needed.
+4. Import a WAV, MP3, or OGG sample.
+5. Select a pad and assign the sample.
+6. Click or tap the pad to play.
+7. Adjust master gain in Settings if needed.
+8. Enable MIDI and grant browser permission.
+9. Hit an MPD218 pad. Bank A uses notes 36-51 by default.
+10. Use MIDI Learn on a selected pad if your controller sends different notes.
 
 ## Local Storage
 
-Dexie stores projects, pads, sample metadata, sample blobs, MIDI mappings, and sync metadata in IndexedDB. Large audio blobs are not stored in React or Zustand state. Reloading the page keeps project, pad, MIDI mapping, and sample data available locally.
+Dexie stores projects, pads, sample metadata, sample blobs, MIDI mappings, and sync metadata in IndexedDB. Large audio blobs are not stored in React or Zustand state. Reloading the page keeps project, pad, MIDI mapping, and sample data available locally. Sample duration is recorded when the browser audio engine has decoded the local file.
 
 ## PocketBase Sync
 
@@ -43,11 +45,19 @@ PocketBase is optional. Set:
 VITE_POCKETBASE_URL=http://127.0.0.1:8090
 ```
 
-The app remains usable when PocketBase is not configured or unavailable. Manual sync sends project metadata, pad mappings, sample metadata, and sample files to PocketBase collections named `webmpc_projects` and `webmpc_samples`. Local IndexedDB remains the playback source of truth.
+The app remains usable when PocketBase is not configured or unavailable. Manual sync sends project metadata, pad mappings, sample metadata, and sample files to PocketBase collections named `webmpc_projects` and `webmpc_samples`. `Load remote` lists synced projects and `Restore` imports a remote project as a new local project without deleting existing local data. Local IndexedDB remains the playback source of truth.
+
+Successful sync and restore operations update local sync metadata with the remote record ID, last synced time, and remote updated timestamp.
+
+If the remote project timestamp is newer than the current local project, WebMPC does not overwrite it during `Sync now`. Use `Load remote` and `Restore` to import the newer remote copy as a separate local project.
+
+See [docs/pocketbase.md](docs/pocketbase.md) for concrete collection fields and recommended API rules.
 
 ## Import And Export
 
 Use the Import / Export panel to download a `.webmpc.json` project bundle. The export includes project metadata, pad mappings, sample metadata, MIDI mappings, and sample files as data URLs when available.
+
+The project bundle path is covered by Vitest with fake IndexedDB so project creation, pad defaults, sample blob persistence, and export/import round trips are checked without a browser.
 
 ## Docker Compose
 
@@ -70,7 +80,7 @@ VITE_POCKETBASE_URL=https://your-tailnet-host:8090 docker compose up --build
 Create the PocketBase collections before syncing:
 
 - `webmpc_projects`: JSON-capable fields for `project`, `pads`, and `samples`.
-- `webmpc_samples`: relation/text field for `project`, text field for `sampleId`, and file field for `file`.
+- `webmpc_samples`: relation or text field for `project`, text field for `sampleId`, and file field for `file`.
 
 ## Tailscale Serve HTTPS
 

@@ -5,7 +5,7 @@ import type { Project } from "../types/models";
 
 type Props = {
   projects: Project[];
-  onRefresh: () => Promise<void>;
+  onRefresh: (projectId?: string) => Promise<void>;
 };
 
 export function ProjectList({ projects, onRefresh }: Props) {
@@ -18,7 +18,7 @@ export function ProjectList({ projects, onRefresh }: Props) {
     try {
       const project = await createProject(name.trim() || "New kit");
       setCurrentProjectId(project.id);
-      await onRefresh();
+      await onRefresh(project.id);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to create project.");
     }

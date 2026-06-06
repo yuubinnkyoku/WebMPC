@@ -2,12 +2,13 @@ import { audioEngine } from "../services/audio";
 import { importSample, savePad } from "../services/storage";
 import { useAppStore } from "../store/useAppStore";
 import type { Pad, Sample } from "../types/models";
+import { formatBytes, formatDurationMs } from "../utils/format";
 
 type Props = {
   projectId: string;
   pads: Pad[];
   samples: Sample[];
-  onRefresh: () => Promise<void>;
+  onRefresh: (projectId?: string) => Promise<void>;
 };
 
 export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
@@ -17,6 +18,7 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
   const learningPad = useAppStore((state) => state.learningPad);
   const setError = useAppStore((state) => state.setError);
   const pad = pads.find((item) => item.bank === selectedBank && item.padIndex === selectedPadIndex);
+  const assignedSample = samples.find((sample) => sample.id === pad?.sampleId);
 
   async function handleFile(file?: File) {
     if (!file) return;
@@ -25,7 +27,7 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
       const sample = await importSample(projectId, file, durationMs);
       await audioEngine.loadSample(sample).catch(() => undefined);
       if (pad) await savePad({ ...pad, sampleId: sample.id });
-      await onRefresh();
+      await onRefresh(projectId);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to import sample.");
     }
@@ -34,7 +36,7 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
   async function updatePad(updates: Partial<Pad>) {
     if (!pad) return;
     await savePad({ ...pad, ...updates });
-    await onRefresh();
+    await onRefresh(projectId);
   }
 
   if (!pad) return null;
@@ -46,6 +48,13 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
         <button onClick={() => setLearningPad({ bank: pad.bank, padIndex: pad.padIndex })}>
           {learningPad?.bank === pad.bank && learningPad.padIndex === pad.padIndex ? "Learning..." : "MIDI Learn"}
         </button>
+      </div>
+      <div className="mapping-status">
+        <strong>Pad {pad.bank}{pad.padIndex + 1}</strong>
+        <span>
+          {pad.midiNote !== undefined ? `MIDI note ${pad.midiNote}` : "No MIDI note mapped"}
+          {learningPad?.bank === pad.bank && learningPad.padIndex === pad.padIndex ? " · waiting for note" : ""}
+        </span>
       </div>
       <label className="field">
         Import audio
@@ -60,6 +69,12 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
           ))}
         </select>
       </label>
+      {assignedSample ? (
+        <div className="sample-meta">
+          <strong>{assignedSample.name}</strong>
+          <span>{formatDurationMs(assignedSample.durationMs)} · {formatBytes(assignedSample.size)} · {assignedSample.mimeType || "unknown type"}</span>
+        </div>
+      ) : null}
       <div className="control-grid">
         <NumberField label="Gain" value={pad.gain} min={0} max={1.5} step={0.05} onChange={(gain) => updatePad({ gain })} />
         <NumberField label="Pan" value={pad.pan} min={-1} max={1} step={0.05} onChange={(pan) => updatePad({ pan })} />
@@ -68,6 +83,10 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
         <NumberField label="End ms" value={pad.endMs ?? 0} min={0} max={600000} step={10} onChange={(endMs) => updatePad({ endMs: endMs > 0 ? endMs : undefined })} />
         <NumberField label="MIDI note" value={pad.midiNote ?? 0} min={0} max={127} step={1} onChange={(midiNote) => updatePad({ midiNote })} />
       </div>
+      <label className="field">
+        Choke group
+        <input value={pad.chokeGroup ?? ""} placeholder="None" onChange={(event) => void updatePad({ chokeGroup: event.target.value.trim() || undefined })} />
+      </label>
       <label className="checkbox">
         <input type="checkbox" checked={pad.oneShot} onChange={(event) => void updatePad({ oneShot: event.target.checked })} />
         One-shot

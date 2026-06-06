@@ -60,6 +60,7 @@ export type SyncMetadata = {
   projectId: string;
   remoteId?: string;
   lastSyncedAt?: number;
+  remoteUpdatedAt?: number;
   updatedAt: number;
 };
 

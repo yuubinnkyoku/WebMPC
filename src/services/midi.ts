@@ -4,10 +4,12 @@ import { makeId } from "../utils/id";
 import { labelMidiMessage } from "../utils/midi";
 
 type MidiListener = (message: MidiMessage) => void;
+type MidiInputsListener = (inputs: MidiInput[]) => void;
 
 class MidiService {
   private access?: MidiAccess;
   private listeners = new Set<MidiListener>();
+  private inputListeners = new Set<MidiInputsListener>();
   inputs: MidiInput[] = [];
   enabled = false;
 
@@ -33,6 +35,12 @@ class MidiService {
     return () => this.listeners.delete(listener);
   }
 
+  subscribeInputs(listener: MidiInputsListener): () => void {
+    this.inputListeners.add(listener);
+    listener(this.inputs);
+    return () => this.inputListeners.delete(listener);
+  }
+
   private refreshInputs(): void {
     if (!this.access) return;
     this.inputs.forEach((input) => {
@@ -42,6 +50,7 @@ class MidiService {
     this.inputs.forEach((input) => {
       input.onmidimessage = (event) => this.handleMessage(event);
     });
+    this.inputListeners.forEach((listener) => listener(this.inputs));
   }
 
   private handleMessage(event: MidiMessageEventLike): void {

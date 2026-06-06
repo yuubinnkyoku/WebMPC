@@ -20,6 +20,7 @@ describe("midi utilities", () => {
 
   it("labels MIDI monitor messages", () => {
     expect(labelMidiMessage(0x90, 36, 127)).toBe("Note on 36 velocity 127");
+    expect(labelMidiMessage(0x90, 36, 0)).toBe("Note off 36");
     expect(labelMidiMessage(0xb0, 1, 32)).toBe("CC 1 value 32");
   });
 });

@@ -9,6 +9,10 @@ type SyncViewState = {
   message: string;
 };
 
+type SettingsState = {
+  masterGain: number;
+};
+
 type AppState = {
   currentProjectId?: string;
   selectedBank: Bank;
@@ -19,6 +23,7 @@ type AppState = {
   learningPad?: { bank: Bank; padIndex: number };
   audio: AudioEngineState;
   sync: SyncViewState;
+  settings: SettingsState;
   triggeredPads: Record<string, number>;
   error?: string;
   setCurrentProjectId: (id?: string) => void;
@@ -29,6 +34,7 @@ type AppState = {
   setLearningPad: (pad?: { bank: Bank; padIndex: number }) => void;
   setAudio: (audio: AudioEngineState) => void;
   setSync: (sync: SyncViewState) => void;
+  setMasterGain: (masterGain: number) => void;
   flashPad: (bank: Bank, padIndex: number) => void;
   setError: (error?: string) => void;
 };
@@ -41,6 +47,7 @@ export const useAppStore = create<AppState>((set) => ({
   midiMessages: [],
   audio: { ready: false, usingWorklet: false, message: "Audio stopped" },
   sync: { configured: false, signedIn: false, syncing: false, message: "PocketBase is not configured" },
+  settings: { masterGain: 0.9 },
   triggeredPads: {},
   setCurrentProjectId: (id) => set({ currentProjectId: id }),
   setSelectedBank: (bank) => set({ selectedBank: bank }),
@@ -51,6 +58,7 @@ export const useAppStore = create<AppState>((set) => ({
   setLearningPad: (pad) => set({ learningPad: pad }),
   setAudio: (audio) => set({ audio }),
   setSync: (sync) => set({ sync }),
+  setMasterGain: (masterGain) => set({ settings: { masterGain } }),
   flashPad: (bank, padIndex) => {
     const key = `${bank}:${padIndex}`;
     set((state) => ({ triggeredPads: { ...state.triggeredPads, [key]: Date.now() } }));

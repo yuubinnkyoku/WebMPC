@@ -125,12 +125,36 @@ export async function getSampleBlob(sampleId: string): Promise<Blob | undefined>
   return (await db.sampleBlobs.get(sampleId))?.blob;
 }
 
+export async function updateSampleDuration(sampleId: string, durationMs: number): Promise<void> {
+  const sample = await db.samples.get(sampleId);
+  if (!sample || sample.durationMs === durationMs) return;
+  await db.samples.put({ ...sample, durationMs, updatedAt: Date.now() });
+  await touchProject(sample.projectId);
+}
+
 export async function getMidiMappings(): Promise<MidiMapping[]> {
   return db.midiMappings.toArray();
 }
 
 export async function saveMidiMapping(mapping: MidiMapping): Promise<void> {
   await db.midiMappings.put({ ...mapping, updatedAt: Date.now() });
+}
+
+export async function getSyncMetadata(projectId: string): Promise<SyncMetadata | undefined> {
+  return db.syncMetadata.where("projectId").equals(projectId).first();
+}
+
+export async function saveSyncMetadata(metadata: Omit<SyncMetadata, "id" | "updatedAt">): Promise<SyncMetadata> {
+  const existing = await getSyncMetadata(metadata.projectId);
+  const now = Date.now();
+  const next: SyncMetadata = {
+    id: existing?.id ?? makeId("sync"),
+    ...existing,
+    ...metadata,
+    updatedAt: now
+  };
+  await db.syncMetadata.put(next);
+  return next;
 }
 
 export async function ensureDefaultMapping(): Promise<MidiMapping> {
@@ -156,7 +180,7 @@ export async function touchProject(projectId: string): Promise<void> {
 }
 
 export async function replaceProjectBundle(project: Project, pads: Pad[], samples: Array<{ sample: Sample; blob?: Blob }>, mappings: MidiMapping[]): Promise<void> {
-  await db.transaction("rw", [db.projects, db.pads, db.samples, db.sampleBlobs, db.midiMappings], async () => {
+  await db.transaction("rw", [db.projects, db.pads, db.samples, db.sampleBlobs, db.midiMappings, db.syncMetadata], async () => {
     await db.projects.put(project);
     await db.pads.where("projectId").equals(project.id).delete();
     await db.samples.where("projectId").equals(project.id).delete();
