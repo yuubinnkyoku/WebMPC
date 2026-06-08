@@ -42,6 +42,23 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.danger-button {
+  align-self: flex-start;
+  border-color: #7a2d36;
+  color: #ffb6be;
+}
+
+.danger-button:hover {
+  border-color: #ba4350;
+  background: #2b171b;
+}
+
+.icon-button {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 input,
 select {
   width: 100%;
@@ -169,6 +186,19 @@ aside,
   padding: 10px;
 }
 
+.project-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.project-select {
+  min-width: 0;
+}
+
 .selected {
   border-color: #f4c95d;
   background: #2d291a;
@@ -195,6 +225,9 @@ aside,
   align-content: space-between;
   text-align: left;
   background: #242b31;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .pad.active {
@@ -203,7 +236,23 @@ aside,
 }
 
 .pad-index {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   font-weight: 800;
+}
+
+.pad-index kbd {
+  min-width: 20px;
+  border: 1px solid #4a555d;
+  border-radius: 4px;
+  padding: 2px 5px;
+  color: #cfd7dc;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
 }
 
 .pad-name {
@@ -245,11 +294,18 @@ aside,
 .mapping-status {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 10px;
   margin-top: 12px;
   border: 1px solid #293138;
   border-radius: 6px;
   padding: 10px;
+}
+
+.mapping-status div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .mapping-status span {

@@ -1,9 +1,16 @@
 import type { Pad, Sample } from "../types/models";
+import { getPlaybackWindow } from "../utils/playbackWindow";
 import { getSampleBlob, updateSampleDuration } from "./storage";
 
 type LoadedSample = {
   sample: Sample;
   buffer: AudioBuffer;
+};
+
+type FallbackVoice = {
+  source: AudioBufferSourceNode;
+  gain: GainNode;
+  stopping: boolean;
 };
 
 export type AudioEngineState = {
@@ -15,7 +22,8 @@ export type AudioEngineState = {
 class AudioEngine {
   private context?: AudioContext;
   private samples = new Map<string, LoadedSample>();
-  private activeByChokeGroup = new Map<string, AudioBufferSourceNode[]>();
+  private activeByChokeGroup = new Map<string, FallbackVoice[]>();
+  private activeByPad = new Map<string, FallbackVoice[]>();
   private master?: GainNode;
   private workletNode?: AudioWorkletNode;
   private workletSetup?: Promise<void>;
@@ -64,11 +72,29 @@ class AudioEngine {
     const buffer = await this.context.decodeAudioData(await blob.arrayBuffer());
     this.samples.set(sample.id, { sample, buffer });
     await updateSampleDuration(sample.id, Math.round(buffer.duration * 1000));
-    this.postSampleToWorklet(sample.id, buffer);
+    this.postSampleToWorklet(sample.id, sample.projectId, buffer);
   }
 
   async loadProjectSamples(samples: Sample[]): Promise<void> {
     await Promise.all(samples.map((sample) => this.loadSample(sample).catch(() => undefined)));
+  }
+
+  unloadSample(sampleId: string): void {
+    this.samples.delete(sampleId);
+    if (this.workletNode) {
+      this.workletNode.port.postMessage({ type: "unloadSample", sampleId });
+    }
+  }
+
+  unloadProject(projectId: string): void {
+    for (const [sampleId, loaded] of this.samples.entries()) {
+      if (loaded.sample.projectId === projectId) {
+        this.samples.delete(sampleId);
+      }
+    }
+    if (this.workletNode) {
+      this.workletNode.port.postMessage({ type: "unloadProject", projectId });
+    }
   }
 
   async decodeDurationMs(file: File): Promise<number | undefined> {
@@ -96,12 +122,14 @@ class AudioEngine {
     if (this.workletNode) {
       this.workletNode.port.postMessage({
         type: "trigger",
+        padId: pad.id,
         sampleId: pad.sampleId,
         gain: Math.max(0, Math.min(1.5, pad.gain * velocity)),
         pan: Math.max(-1, Math.min(1, pad.pan)),
         pitch: pad.pitch,
         startMs: pad.startMs,
         endMs: pad.endMs,
+        oneShot: pad.oneShot,
         chokeGroup: pad.chokeGroup
       });
       return;
@@ -109,9 +137,12 @@ class AudioEngine {
 
     if (pad.chokeGroup) {
       const active = this.activeByChokeGroup.get(pad.chokeGroup) ?? [];
-      active.forEach((source) => source.stop());
+      active.forEach((voice) => this.stopVoice(voice));
       this.activeByChokeGroup.set(pad.chokeGroup, []);
     }
+
+    const playbackWindow = getPlaybackWindow(loaded.buffer.duration, pad.startMs, pad.endMs);
+    if (!playbackWindow) return;
 
     const source = this.context.createBufferSource();
     const gain = this.context.createGain();
@@ -125,17 +156,42 @@ class AudioEngine {
     gain.connect(panner);
     panner.connect(this.master);
 
-    const startSeconds = Math.max(0, pad.startMs / 1000);
-    const endSeconds = pad.endMs ? Math.max(startSeconds, pad.endMs / 1000) : loaded.buffer.duration;
-    const duration = Math.max(0.005, Math.min(loaded.buffer.duration - startSeconds, endSeconds - startSeconds));
-    source.start(undefined, startSeconds, duration);
-    this.fadeGain(gain, duration);
+    const voice: FallbackVoice = { source, gain, stopping: false };
+    source.start(undefined, playbackWindow.startSeconds, playbackWindow.durationSeconds);
+    this.fadeGain(gain, playbackWindow.durationSeconds);
+    this.trackPadVoice(pad.id, voice);
     if (pad.chokeGroup) {
       const active = this.activeByChokeGroup.get(pad.chokeGroup) ?? [];
-      active.push(source);
-      source.onended = () => this.activeByChokeGroup.set(pad.chokeGroup ?? "", active.filter((item) => item !== source));
+      active.push(voice);
+      source.onended = () => {
+        this.activeByChokeGroup.set(pad.chokeGroup ?? "", active.filter((item) => item !== voice));
+        this.untrackPadVoice(pad.id, voice);
+      };
       this.activeByChokeGroup.set(pad.chokeGroup, active);
+    } else {
+      source.onended = () => this.untrackPadVoice(pad.id, voice);
     }
+  }
+
+  stopPad(pad: Pad): void {
+    if (this.workletNode) {
+      this.workletNode.port.postMessage({ type: "stopPad", padId: pad.id });
+      return;
+    }
+    const active = this.activeByPad.get(pad.id) ?? [];
+    active.forEach((voice) => this.stopVoice(voice));
+    this.activeByPad.set(pad.id, []);
+  }
+
+  stopAll(): void {
+    if (this.workletNode) {
+      this.workletNode.port.postMessage({ type: "stopAll" });
+    }
+    for (const active of this.activeByPad.values()) {
+      active.forEach((voice) => this.stopVoice(voice));
+    }
+    this.activeByPad.clear();
+    this.activeByChokeGroup.clear();
   }
 
   private fadeGain(gain: GainNode, duration: number): void {
@@ -160,7 +216,7 @@ class AudioEngine {
         outputChannelCount: [2]
       });
       this.workletNode.connect(this.master);
-      this.samples.forEach(({ buffer }, sampleId) => this.postSampleToWorklet(sampleId, buffer));
+      this.samples.forEach(({ sample, buffer }, sampleId) => this.postSampleToWorklet(sampleId, sample.projectId, buffer));
       this.state = { ...this.state, usingWorklet: true, message: "Audio ready with AudioWorklet" };
     } catch {
       this.workletNode = undefined;
@@ -168,18 +224,45 @@ class AudioEngine {
     }
   }
 
-  private postSampleToWorklet(sampleId: string, buffer: AudioBuffer): void {
+  private postSampleToWorklet(sampleId: string, projectId: string, buffer: AudioBuffer): void {
     if (!this.workletNode) return;
     const channels = Array.from({ length: buffer.numberOfChannels }, (_, index) => new Float32Array(buffer.getChannelData(index)));
     this.workletNode.port.postMessage(
       {
         type: "loadSample",
         sampleId,
+        projectId,
         sampleRate: buffer.sampleRate,
         channels
       },
       channels.map((channel) => channel.buffer)
     );
+  }
+
+  private trackPadVoice(padId: string, voice: FallbackVoice): void {
+    const active = this.activeByPad.get(padId) ?? [];
+    active.push(voice);
+    this.activeByPad.set(padId, active);
+  }
+
+  private untrackPadVoice(padId: string, voice: FallbackVoice): void {
+    const active = this.activeByPad.get(padId) ?? [];
+    this.activeByPad.set(padId, active.filter((item) => item !== voice));
+  }
+
+  private stopVoice(voice: FallbackVoice): void {
+    if (voice.stopping || !this.context) return;
+    voice.stopping = true;
+    const now = this.context.currentTime;
+    const releaseSeconds = 0.015;
+    try {
+      voice.gain.gain.cancelScheduledValues(now);
+      voice.gain.gain.setValueAtTime(Math.max(0.0001, voice.gain.gain.value), now);
+      voice.gain.gain.exponentialRampToValueAtTime(0.0001, now + releaseSeconds);
+      voice.source.stop(now + releaseSeconds);
+    } catch {
+      // Already stopped sources can throw in some browsers.
+    }
   }
 }
 

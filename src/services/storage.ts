@@ -1,5 +1,6 @@
 import Dexie, { type Table } from "dexie";
 import type { Bank, MidiMapping, Pad, Project, Sample, SampleBlob, SyncMetadata } from "../types/models";
+import { isAudioFile } from "../utils/file";
 import { makeId } from "../utils/id";
 import { sha256Blob } from "../utils/hash";
 
@@ -51,7 +52,7 @@ export async function createProject(name: string): Promise<Project> {
   const now = Date.now();
   const project: Project = {
     id: makeId("project"),
-    name,
+    name: normalizeProjectName(name),
     bpm: 120,
     createdAt: now,
     updatedAt: now,
@@ -76,7 +77,17 @@ export async function getProject(projectId: string): Promise<Project | undefined
 }
 
 export async function updateProject(project: Project): Promise<void> {
-  await db.projects.put({ ...project, updatedAt: Date.now(), version: project.version + 1 });
+  await db.projects.put({ ...normalizeProject(project), updatedAt: Date.now(), version: project.version + 1 });
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await db.transaction("rw", [db.projects, db.pads, db.samples, db.sampleBlobs, db.syncMetadata], async () => {
+    await db.projects.delete(projectId);
+    await db.pads.where("projectId").equals(projectId).delete();
+    await db.samples.where("projectId").equals(projectId).delete();
+    await db.sampleBlobs.where("projectId").equals(projectId).delete();
+    await db.syncMetadata.where("projectId").equals(projectId).delete();
+  });
 }
 
 export async function getPads(projectId: string): Promise<Pad[]> {
@@ -84,8 +95,11 @@ export async function getPads(projectId: string): Promise<Pad[]> {
 }
 
 export async function savePad(pad: Pad): Promise<void> {
-  await db.pads.put({ ...pad, updatedAt: Date.now() });
-  await touchProject(pad.projectId);
+  const now = Date.now();
+  await db.transaction("rw", db.pads, db.projects, async () => {
+    await db.pads.put({ ...normalizePad(pad), updatedAt: now });
+    await touchProjectRecord(pad.projectId, now);
+  });
 }
 
 export async function getSamples(projectId: string): Promise<Sample[]> {
@@ -93,6 +107,9 @@ export async function getSamples(projectId: string): Promise<Sample[]> {
 }
 
 export async function importSample(projectId: string, file: File, durationMs?: number): Promise<Sample> {
+  if (!isAudioFile(file)) {
+    throw new Error("Sample file must be an audio file.");
+  }
   const now = Date.now();
   const hash = await sha256Blob(file);
   const sample: Sample = {
@@ -109,7 +126,7 @@ export async function importSample(projectId: string, file: File, durationMs?: n
   await db.transaction("rw", db.samples, db.sampleBlobs, db.projects, async () => {
     await db.samples.add(sample);
     await db.sampleBlobs.add({ sampleId: sample.id, projectId, blob: file, updatedAt: now });
-    await touchProject(projectId);
+    await touchProjectRecord(projectId, now);
   });
   return sample;
 }
@@ -125,11 +142,29 @@ export async function getSampleBlob(sampleId: string): Promise<Blob | undefined>
   return (await db.sampleBlobs.get(sampleId))?.blob;
 }
 
-export async function updateSampleDuration(sampleId: string, durationMs: number): Promise<void> {
+export async function deleteSample(sampleId: string): Promise<void> {
   const sample = await db.samples.get(sampleId);
-  if (!sample || sample.durationMs === durationMs) return;
-  await db.samples.put({ ...sample, durationMs, updatedAt: Date.now() });
-  await touchProject(sample.projectId);
+  if (!sample) return;
+  const now = Date.now();
+  await db.transaction("rw", db.samples, db.sampleBlobs, db.pads, db.projects, async () => {
+    const assignedPads = await db.pads.where("sampleId").equals(sampleId).toArray();
+    if (assignedPads.length > 0) {
+      await db.pads.bulkPut(assignedPads.map((pad) => ({ ...pad, sampleId: undefined, updatedAt: now })));
+    }
+    await db.samples.delete(sampleId);
+    await db.sampleBlobs.delete(sampleId);
+    await touchProjectRecord(sample.projectId, now);
+  });
+}
+
+export async function updateSampleDuration(sampleId: string, durationMs: number): Promise<void> {
+  const now = Date.now();
+  await db.transaction("rw", db.samples, db.projects, async () => {
+    const sample = await db.samples.get(sampleId);
+    if (!sample || sample.durationMs === durationMs) return;
+    await db.samples.put({ ...sample, durationMs, updatedAt: now });
+    await touchProjectRecord(sample.projectId, now);
+  });
 }
 
 export async function getMidiMappings(): Promise<MidiMapping[]> {
@@ -138,6 +173,66 @@ export async function getMidiMappings(): Promise<MidiMapping[]> {
 
 export async function saveMidiMapping(mapping: MidiMapping): Promise<void> {
   await db.midiMappings.put({ ...mapping, updatedAt: Date.now() });
+}
+
+export async function applyMidiMapping(projectId: string, mappingName = "MPD218 default"): Promise<void> {
+  const mapping = await db.midiMappings.where("name").equals(mappingName).first();
+  if (!mapping) {
+    throw new Error(`MIDI mapping "${mappingName}" was not found.`);
+  }
+  const pads = await getPads(projectId);
+  const padsByPosition = new Map(pads.map((pad) => [`${pad.bank}:${pad.padIndex}`, pad]));
+  const now = Date.now();
+  const updatedPads = Object.entries(mapping.mappings).flatMap(([note, target]) => {
+    const pad = padsByPosition.get(`${target.bank}:${target.padIndex}`);
+    const midiNote = Number(note);
+    return pad && isIntegerInRange(midiNote, 0, 127) ? [{ ...normalizePad({ ...pad, midiNote }), updatedAt: now }] : [];
+  });
+  await db.transaction("rw", db.pads, db.projects, async () => {
+    if (updatedPads.length > 0) {
+      await db.pads.bulkPut(updatedPads);
+    }
+    await touchProjectRecord(projectId, now);
+  });
+}
+
+function normalizePad(pad: Pad): Pad {
+  return {
+    ...pad,
+    gain: clampFinite(pad.gain, 0, 1.5, 1),
+    pan: clampFinite(pad.pan, -1, 1, 0),
+    pitch: clampFinite(pad.pitch, -24, 24, 0),
+    startMs: clampFinite(pad.startMs, 0, 600000, 0),
+    endMs: pad.endMs === undefined ? undefined : normalizeOptionalPositive(pad.endMs, 600000),
+    midiNote: pad.midiNote === undefined || !isIntegerInRange(pad.midiNote, 0, 127) ? undefined : pad.midiNote
+  };
+}
+
+function normalizeOptionalPositive(value: number, max: number): number | undefined {
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return Math.min(value, max);
+}
+
+function clampFinite(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
+function isIntegerInRange(value: number, min: number, max: number): boolean {
+  return Number.isInteger(value) && value >= min && value <= max;
+}
+
+function normalizeProject(project: Project): Project {
+  return {
+    ...project,
+    name: normalizeProjectName(project.name),
+    bpm: clampFinite(project.bpm, 20, 300, 120)
+  };
+}
+
+function normalizeProjectName(name: string): string {
+  const trimmed = name.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, 120) : "New kit";
 }
 
 export async function getSyncMetadata(projectId: string): Promise<SyncMetadata | undefined> {
@@ -173,9 +268,13 @@ export async function ensureDefaultMapping(): Promise<MidiMapping> {
 }
 
 export async function touchProject(projectId: string): Promise<void> {
+  await touchProjectRecord(projectId);
+}
+
+async function touchProjectRecord(projectId: string, updatedAt = Date.now()): Promise<void> {
   const project = await db.projects.get(projectId);
   if (project) {
-    await db.projects.put({ ...project, updatedAt: Date.now(), version: project.version + 1 });
+    await db.projects.put({ ...project, updatedAt, version: project.version + 1 });
   }
 }
 

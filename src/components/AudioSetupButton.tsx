@@ -23,13 +23,20 @@ export function AudioSetupButton({ onReady }: Props) {
     }
   }
 
+  function stopAll() {
+    audioEngine.stopAll();
+  }
+
   return (
     <section className="panel compact">
       <div>
         <h2>Audio</h2>
         <p>{audio.message}</p>
       </div>
-      <button className="primary" onClick={start}>{audio.ready ? "Restart Audio" : "Start Audio"}</button>
+      <div className="button-row">
+        <button className="primary" onClick={start}>{audio.ready ? "Restart Audio" : "Start Audio"}</button>
+        <button disabled={!audio.ready} onClick={stopAll}>Stop all</button>
+      </div>
     </section>
   );
 }

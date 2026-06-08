@@ -35,6 +35,7 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
 
   async function loadSamples() {
     await audioEngine.loadProjectSamples(samples);
+    if (project) await onRefresh(project.id);
   }
 
   async function saveProjectMetadata(updates: Partial<Pick<Project, "name" | "bpm">>) {
@@ -108,7 +109,7 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
         <PadGrid pads={pads} samples={samples} onPadChanged={onRefresh} />
         <div className="side">
           <SamplePanel projectId={project.id} pads={pads} samples={samples} onRefresh={onRefresh} />
-          <MidiPanel pads={pads} onRefresh={onRefresh} />
+          <MidiPanel projectId={project.id} pads={pads} onRefresh={onRefresh} />
           <SyncPanel projectId={project.id} onRefresh={onRefresh} />
           <SettingsPanel projectId={project.id} onRefresh={onRefresh} />
         </div>

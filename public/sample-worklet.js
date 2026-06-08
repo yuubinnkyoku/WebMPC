@@ -11,6 +11,7 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
   handleMessage(message) {
     if (message.type === "loadSample") {
       this.samples.set(message.sampleId, {
+        projectId: message.projectId,
         channels: message.channels,
         sampleRate: message.sampleRate,
         length: message.channels[0]?.length ?? 0
@@ -18,16 +19,40 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
       return;
     }
 
+    if (message.type === "unloadSample") {
+      this.samples.delete(message.sampleId);
+      this.voices = this.voices.filter((voice) => voice.sampleId !== message.sampleId);
+      return;
+    }
+
+    if (message.type === "unloadProject") {
+      for (const [sampleId, sample] of this.samples.entries()) {
+        if (sample.projectId === message.projectId) {
+          this.samples.delete(sampleId);
+        }
+      }
+      this.voices = this.voices.filter((voice) => voice.projectId !== message.projectId);
+      return;
+    }
+
     if (message.type === "trigger") {
       const sample = this.samples.get(message.sampleId);
       if (!sample || sample.length === 0) return;
       if (message.chokeGroup) {
-        this.voices = this.voices.filter((voice) => voice.chokeGroup !== message.chokeGroup);
+        for (const voice of this.voices) {
+          if (voice.chokeGroup === message.chokeGroup) {
+            voice.stopping = true;
+            voice.releaseAge = 0;
+          }
+        }
       }
       const startFrame = Math.max(0, Math.floor(((message.startMs ?? 0) / 1000) * sample.sampleRate));
       const endFrame = message.endMs ? Math.min(sample.length, Math.floor((message.endMs / 1000) * sample.sampleRate)) : sample.length;
       if (endFrame <= startFrame) return;
       this.voices.push({
+        padId: message.padId,
+        sampleId: message.sampleId,
+        projectId: sample.projectId,
         sample,
         position: startFrame,
         startFrame,
@@ -36,8 +61,28 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
         pan: Math.max(-1, Math.min(1, message.pan ?? 0)),
         step: (sample.sampleRate / sampleRate) * Math.pow(2, (message.pitch ?? 0) / 12),
         age: 0,
+        stopping: false,
+        releaseAge: 0,
         chokeGroup: message.chokeGroup
       });
+      return;
+    }
+
+    if (message.type === "stopPad") {
+      for (const voice of this.voices) {
+        if (voice.padId === message.padId) {
+          voice.stopping = true;
+          voice.releaseAge = 0;
+        }
+      }
+      return;
+    }
+
+    if (message.type === "stopAll") {
+      for (const voice of this.voices) {
+        voice.stopping = true;
+        voice.releaseAge = 0;
+      }
     }
   }
 
@@ -54,11 +99,13 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
       const rightSource = voice.sample.channels[1] ?? leftSource;
       const totalFrames = voice.endFrame - voice.startFrame;
       const fadeFrames = Math.max(1, Math.min(384, Math.floor(totalFrames / 2)));
+      const releaseFrames = 384;
       const leftGain = voice.gain * (voice.pan <= 0 ? 1 : 1 - voice.pan);
       const rightGain = voice.gain * (voice.pan >= 0 ? 1 : 1 + voice.pan);
 
       for (let frame = 0; frame < left.length; frame += 1) {
         if (voice.position >= voice.endFrame) break;
+        if (voice.stopping && voice.releaseAge >= releaseFrames) break;
         const sourceIndex = Math.floor(voice.position);
         const fraction = voice.position - sourceIndex;
         const nextIndex = Math.min(sourceIndex + 1, voice.endFrame - 1);
@@ -67,14 +114,16 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
         const framesLeft = voice.endFrame - voice.position;
         const fadeIn = Math.min(1, voice.age / fadeFrames);
         const fadeOut = Math.min(1, framesLeft / fadeFrames);
-        const fade = Math.max(0, Math.min(fadeIn, fadeOut));
+        const release = voice.stopping ? Math.max(0, 1 - voice.releaseAge / releaseFrames) : 1;
+        const fade = Math.max(0, Math.min(fadeIn, fadeOut, release));
         left[frame] += leftSample * leftGain * fade;
         right[frame] += rightSample * rightGain * fade;
         voice.position += voice.step;
         voice.age += voice.step;
+        if (voice.stopping) voice.releaseAge += voice.step;
       }
 
-      if (voice.position < voice.endFrame) remaining.push(voice);
+      if (voice.position < voice.endFrame && (!voice.stopping || voice.releaseAge < releaseFrames)) remaining.push(voice);
     }
     this.voices = remaining;
     return true;

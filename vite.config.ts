@@ -12,10 +12,19 @@ export default defineConfig({
         name: "WebMPC",
         short_name: "WebMPC",
         description: "Local-first browser MPC sampler",
+        start_url: "/",
+        scope: "/",
         theme_color: "#101418",
         background_color: "#101418",
         display: "standalone",
-        icons: []
+        icons: [
+          {
+            src: "/favicon.svg",
+            sizes: "any",
+            type: "image/svg+xml",
+            purpose: "any maskable"
+          }
+        ]
       }
     })
   ]

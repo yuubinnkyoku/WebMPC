@@ -1,21 +1,23 @@
 import { useCallback, useEffect, useRef } from "react";
 import { audioEngine } from "../services/audio";
 import { midiService } from "../services/midi";
-import { savePad } from "../services/storage";
+import { applyMidiMapping, savePad } from "../services/storage";
 import { useAppStore } from "../store/useAppStore";
 import type { MidiMessage, Pad } from "../types/models";
-import { isNoteOn, velocityToGain } from "../utils/midi";
+import { isNoteOff, isNoteOn, velocityToGain } from "../utils/midi";
 import { MidiMonitor } from "./MidiMonitor";
 
 type Props = {
+  projectId: string;
   pads: Pad[];
   onRefresh: (projectId?: string) => Promise<void>;
 };
 
-export function MidiPanel({ pads, onRefresh }: Props) {
+export function MidiPanel({ projectId, pads, onRefresh }: Props) {
   const padsRef = useRef(pads);
   const onRefreshRef = useRef(onRefresh);
   const learningPadRef = useRef(useAppStore.getState().learningPad);
+  const midiSupported = midiService.isSupported();
   const midiEnabled = useAppStore((state) => state.midiEnabled);
   const midiInputs = useAppStore((state) => state.midiInputs);
   const midiMessages = useAppStore((state) => state.midiMessages);
@@ -28,6 +30,13 @@ export function MidiPanel({ pads, onRefresh }: Props) {
 
   const handleMidi = useCallback(async (message: MidiMessage) => {
     pushMidiMessage(message);
+    if (isNoteOff(message.command, message.data2)) {
+      const pad = padsRef.current.find((item) => item.midiNote === message.data1);
+      if (pad && !pad.oneShot) {
+        audioEngine.stopPad(pad);
+      }
+      return;
+    }
     if (!isNoteOn(message.command, message.data2)) return;
     const learning = learningPadRef.current;
     if (learning) {
@@ -77,13 +86,25 @@ export function MidiPanel({ pads, onRefresh }: Props) {
     }
   }
 
+  async function applyDefaultMapping() {
+    try {
+      await applyMidiMapping(projectId);
+      await onRefresh(projectId);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Unable to apply MIDI mapping.");
+    }
+  }
+
   return (
     <section className="panel">
       <div className="panel-heading">
         <h2>MIDI</h2>
-        <button onClick={enable}>{midiEnabled ? "Refresh MIDI" : "Enable MIDI"}</button>
+        <div className="button-row">
+          <button onClick={applyDefaultMapping}>Apply MPD218</button>
+          <button disabled={!midiSupported} onClick={enable}>{midiEnabled ? "Refresh MIDI" : "Enable MIDI"}</button>
+        </div>
       </div>
-      <p>{midiService.isSupported() ? "Web MIDI available" : "Web MIDI unavailable in this browser"}</p>
+      <p>{midiSupported ? "Web MIDI available" : "Web MIDI unavailable in this browser"}</p>
       <div className="chip-row">
         {midiInputs.length === 0 ? <span className="chip">No inputs</span> : midiInputs.map((input) => <span className="chip" key={input}>{input}</span>)}
       </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getSyncMetadata } from "../services/storage";
 import { getSyncState, listRemoteProjects, restoreRemoteProject, signIn, signOut, syncProject, type RemoteProjectSummary } from "../services/sync";
 import { useAppStore } from "../store/useAppStore";
@@ -12,19 +12,23 @@ export function SyncPanel({ projectId, onRefresh }: Props) {
   const sync = useAppStore((state) => state.sync);
   const setSync = useAppStore((state) => state.setSync);
   const setError = useAppStore((state) => state.setError);
-  const setCurrentProjectId = useAppStore((state) => state.setCurrentProjectId);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remoteProjects, setRemoteProjects] = useState<RemoteProjectSummary[]>([]);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | undefined>();
 
-  useEffect(() => {
-    if (!projectId) {
+  const refreshLastSyncedAt = useCallback(async (nextProjectId = projectId) => {
+    if (!nextProjectId) {
       setLastSyncedAt(undefined);
       return;
     }
-    void getSyncMetadata(projectId).then((metadata) => setLastSyncedAt(metadata?.lastSyncedAt));
-  }, [projectId, sync.message]);
+    const metadata = await getSyncMetadata(nextProjectId);
+    setLastSyncedAt(metadata?.lastSyncedAt);
+  }, [projectId]);
+
+  useEffect(() => {
+    void refreshLastSyncedAt(projectId);
+  }, [projectId, refreshLastSyncedAt, sync.message]);
 
   async function login() {
     try {
@@ -39,7 +43,8 @@ export function SyncPanel({ projectId, onRefresh }: Props) {
     try {
       setSync({ ...getSyncState(), syncing: true, message: "Syncing..." });
       setSync(await syncProject(projectId));
-      setLastSyncedAt(Date.now());
+      await refreshLastSyncedAt(projectId);
+      await onRefresh(projectId);
     } catch (error) {
       setSync({ ...getSyncState(), message: "Sync failed" });
       setError(error instanceof Error ? error.message : "Unable to sync.");
@@ -62,9 +67,8 @@ export function SyncPanel({ projectId, onRefresh }: Props) {
     try {
       setSync({ ...getSyncState(), syncing: true, message: "Restoring project..." });
       const project = await restoreRemoteProject(remoteId);
-      setCurrentProjectId(project.id);
       await onRefresh(project.id);
-      setLastSyncedAt(Date.now());
+      await refreshLastSyncedAt(project.id);
       setSync({ ...getSyncState(), message: `Restored ${project.name}` });
     } catch (error) {
       setSync({ ...getSyncState(), message: "Restore failed" });
@@ -77,7 +81,7 @@ export function SyncPanel({ projectId, onRefresh }: Props) {
       <div className="panel-heading">
         <h2>Sync</h2>
         <div className="button-row">
-          <button disabled={!projectId || !sync.configured || sync.syncing} onClick={() => void syncNow()}>Sync now</button>
+          <button disabled={!projectId || !sync.configured || !sync.signedIn || sync.syncing} onClick={() => void syncNow()}>Sync now</button>
           <button disabled={!sync.configured || !sync.signedIn || sync.syncing} onClick={() => void loadRemoteProjects()}>Load remote</button>
         </div>
       </div>

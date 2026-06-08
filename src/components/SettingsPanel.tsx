@@ -11,7 +11,6 @@ type Props = {
 export function SettingsPanel({ projectId, onRefresh }: Props) {
   const masterGain = useAppStore((state) => state.settings.masterGain);
   const setMasterGain = useAppStore((state) => state.setMasterGain);
-  const setCurrentProjectId = useAppStore((state) => state.setCurrentProjectId);
   const setError = useAppStore((state) => state.setError);
   const [toolStatus, setToolStatus] = useState("Ready");
 
@@ -19,7 +18,6 @@ export function SettingsPanel({ projectId, onRefresh }: Props) {
     if (!file) return;
     try {
       const project = await importProjectFile(file);
-      setCurrentProjectId(project.id);
       await onRefresh(project.id);
       setToolStatus(`Imported ${project.name}`);
     } catch (error) {

@@ -1,5 +1,5 @@
 import { audioEngine } from "../services/audio";
-import { importSample, savePad } from "../services/storage";
+import { deleteSample, importSample, savePad } from "../services/storage";
 import { useAppStore } from "../store/useAppStore";
 import type { Pad, Sample } from "../types/models";
 import { formatBytes, formatDurationMs } from "../utils/format";
@@ -39,22 +39,41 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
     await onRefresh(projectId);
   }
 
+  async function removeAssignedSample() {
+    if (!assignedSample) return;
+    try {
+      audioEngine.unloadSample(assignedSample.id);
+      await deleteSample(assignedSample.id);
+      await onRefresh(projectId);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Unable to delete sample.");
+    }
+  }
+
   if (!pad) return null;
 
   return (
     <section className="panel">
       <div className="panel-heading">
         <h2>Sample</h2>
-        <button onClick={() => setLearningPad({ bank: pad.bank, padIndex: pad.padIndex })}>
-          {learningPad?.bank === pad.bank && learningPad.padIndex === pad.padIndex ? "Learning..." : "MIDI Learn"}
-        </button>
+        <div className="button-row">
+          <button onClick={() => setLearningPad({ bank: pad.bank, padIndex: pad.padIndex })}>
+            {learningPad?.bank === pad.bank && learningPad.padIndex === pad.padIndex ? "Learning..." : "MIDI Learn"}
+          </button>
+          {learningPad?.bank === pad.bank && learningPad.padIndex === pad.padIndex ? (
+            <button onClick={() => setLearningPad(undefined)}>Cancel</button>
+          ) : null}
+        </div>
       </div>
       <div className="mapping-status">
         <strong>Pad {pad.bank}{pad.padIndex + 1}</strong>
-        <span>
-          {pad.midiNote !== undefined ? `MIDI note ${pad.midiNote}` : "No MIDI note mapped"}
-          {learningPad?.bank === pad.bank && learningPad.padIndex === pad.padIndex ? " · waiting for note" : ""}
-        </span>
+        <div>
+          <span>
+            {pad.midiNote !== undefined ? `MIDI note ${pad.midiNote}` : "No MIDI note mapped"}
+            {learningPad?.bank === pad.bank && learningPad.padIndex === pad.padIndex ? " · waiting for note" : ""}
+          </span>
+          <button disabled={pad.midiNote === undefined} onClick={() => void updatePad({ midiNote: undefined })}>Clear MIDI</button>
+        </div>
       </div>
       <label className="field">
         Import audio
@@ -69,10 +88,12 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
           ))}
         </select>
       </label>
+      <button disabled={!pad.sampleId} onClick={() => void updatePad({ sampleId: undefined })}>Clear sample</button>
       {assignedSample ? (
         <div className="sample-meta">
           <strong>{assignedSample.name}</strong>
           <span>{formatDurationMs(assignedSample.durationMs)} · {formatBytes(assignedSample.size)} · {assignedSample.mimeType || "unknown type"}</span>
+          <button className="danger-button" onClick={() => void removeAssignedSample()}>Delete sample</button>
         </div>
       ) : null}
       <div className="control-grid">
@@ -81,7 +102,7 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
         <NumberField label="Pitch" value={pad.pitch} min={-24} max={24} step={1} onChange={(pitch) => updatePad({ pitch })} />
         <NumberField label="Start ms" value={pad.startMs} min={0} max={600000} step={10} onChange={(startMs) => updatePad({ startMs })} />
         <NumberField label="End ms" value={pad.endMs ?? 0} min={0} max={600000} step={10} onChange={(endMs) => updatePad({ endMs: endMs > 0 ? endMs : undefined })} />
-        <NumberField label="MIDI note" value={pad.midiNote ?? 0} min={0} max={127} step={1} onChange={(midiNote) => updatePad({ midiNote })} />
+        <OptionalNumberField label="MIDI note" value={pad.midiNote} min={0} max={127} step={1} onChange={(midiNote) => updatePad({ midiNote })} />
       </div>
       <label className="field">
         Choke group
@@ -100,6 +121,36 @@ function NumberField({ label, value, min, max, step, onChange }: { label: string
     <label className="field">
       {label}
       <input type="number" value={value} min={min} max={max} step={step} onChange={(event) => void onChange(Number(event.target.value))} />
+    </label>
+  );
+}
+
+function OptionalNumberField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange
+}: {
+  label: string;
+  value?: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value?: number) => void;
+}) {
+  return (
+    <label className="field">
+      {label}
+      <input
+        type="number"
+        value={value ?? ""}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => void onChange(event.target.value === "" ? undefined : Number(event.target.value))}
+      />
     </label>
   );
 }

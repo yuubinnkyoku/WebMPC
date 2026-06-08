@@ -1,6 +1,10 @@
 import PocketBase, { type RecordModel } from "pocketbase";
 import type { Pad, Project, Sample } from "../types/models";
 import { makeId } from "../utils/id";
+import { quotePocketBaseFilterValue } from "../utils/pocketbaseFilter";
+import { shouldPruneRemoteSample } from "../utils/remoteSamples";
+import { decideSyncConflict } from "../utils/syncConflict";
+import { validateProjectBundlePayload } from "./exportImport";
 import { db, getPads, getSamples, replaceProjectBundle, saveSyncMetadata } from "./storage";
 
 export type SyncState = {
@@ -64,13 +68,14 @@ export async function syncProject(projectId: string): Promise<SyncState> {
   if (remoteId) {
     const remote = await pb.collection<RemoteProjectRecord>("webmpc_projects").getOne(remoteId).catch(() => undefined);
     const remoteUpdatedAt = remote?.project?.updatedAt;
-    if (remoteUpdatedAt && remoteUpdatedAt > project.updatedAt) {
+    const conflict = decideSyncConflict(project.updatedAt, remoteUpdatedAt);
+    if (conflict.remoteIsNewer) {
       await saveSyncMetadata({
         projectId,
         remoteId,
         remoteUpdatedAt
       });
-      return { ...getSyncState(), message: "Remote project is newer. Use Load remote and Restore to keep both copies." };
+      return { ...getSyncState(), message: conflict.message ?? "Remote project is newer." };
     }
   }
   const record = remoteId
@@ -84,6 +89,7 @@ export async function syncProject(projectId: string): Promise<SyncState> {
     remoteUpdatedAt: Date.parse(record.updated)
   });
   await uploadSampleFiles(record.id, samples);
+  await pruneRemoteSampleFiles(record.id, samples);
   return { ...getSyncState(), message: `Synced ${project.name}` };
 }
 
@@ -107,6 +113,12 @@ export async function restoreRemoteProject(remoteId: string): Promise<Project> {
   const record = await pb.collection<RemoteProjectRecord>("webmpc_projects").getOne(remoteId);
   if (!record.project || !Array.isArray(record.pads) || !Array.isArray(record.samples)) {
     throw new Error("Remote project is missing required WebMPC fields.");
+  }
+  try {
+    validateProjectBundlePayload({ project: record.project, pads: record.pads, samples: record.samples, midiMappings: [] });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Remote project contains invalid WebMPC data.";
+    throw new Error(`Remote project contains invalid WebMPC data: ${message}`);
   }
 
   const now = Date.now();
@@ -179,14 +191,29 @@ async function uploadSampleFiles(remoteProjectId: string, samples: Sample[]): Pr
   );
 }
 
-async function listRemoteSampleFiles(remoteProjectId: string): Promise<Map<string, RemoteSampleRecord>> {
-  if (!pb) return new Map();
-  const records = await pb.collection<RemoteSampleRecord>("webmpc_samples").getList(1, 200, {
-    filter: `project = "${escapeFilterString(remoteProjectId)}"`,
+async function pruneRemoteSampleFiles(remoteProjectId: string, samples: Sample[]): Promise<void> {
+  if (!pb) return;
+  const localSampleIds = new Set(samples.map((sample) => sample.id));
+  const records = await listRemoteSampleFileRecords(remoteProjectId);
+  await Promise.all(
+    records
+      .filter((record) => shouldPruneRemoteSample(record, localSampleIds))
+      .map((record) => pb.collection("webmpc_samples").delete(record.id).catch(() => undefined))
+  );
+}
+
+async function listRemoteSampleFileRecords(remoteProjectId: string): Promise<RemoteSampleRecord[]> {
+  if (!pb) return [];
+  return pb.collection<RemoteSampleRecord>("webmpc_samples").getFullList({
+    filter: `project = ${quotePocketBaseFilterValue(remoteProjectId)}`,
     sort: "-updated"
   });
+}
+
+async function listRemoteSampleFiles(remoteProjectId: string): Promise<Map<string, RemoteSampleRecord>> {
+  const records = await listRemoteSampleFileRecords(remoteProjectId);
   const bySampleId = new Map<string, RemoteSampleRecord>();
-  records.items.forEach((record) => {
+  records.forEach((record) => {
     if (record.sampleId && !bySampleId.has(record.sampleId)) {
       bySampleId.set(record.sampleId, record);
     }
@@ -198,7 +225,7 @@ async function getRemoteSampleFile(remoteProjectId: string, sampleId: string): P
   if (!pb) return undefined;
   return pb
     .collection<RemoteSampleRecord>("webmpc_samples")
-    .getFirstListItem(`project = "${escapeFilterString(remoteProjectId)}" && sampleId = "${escapeFilterString(sampleId)}"`)
+    .getFirstListItem(`project = ${quotePocketBaseFilterValue(remoteProjectId)} && sampleId = ${quotePocketBaseFilterValue(sampleId)}`)
     .catch(() => undefined);
 }
 
@@ -209,10 +236,6 @@ async function downloadRemoteSampleBlob(record: RemoteSampleRecord): Promise<Blo
   const response = await fetch(pb.files.getURL(record, fileName));
   if (!response.ok) return undefined;
   return response.blob();
-}
-
-function escapeFilterString(value: string): string {
-  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
 
 export type SyncPayload = {

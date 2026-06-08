@@ -1,6 +1,8 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import type { AudioEngineState } from "../services/audio";
 import type { Bank, MidiMessage } from "../types/models";
+import { defaultUserSettings, normalizeMasterGain, normalizeUserSettings, type UserSettings } from "../utils/settings";
 
 type SyncViewState = {
   configured: boolean;
@@ -9,9 +11,7 @@ type SyncViewState = {
   message: string;
 };
 
-type SettingsState = {
-  masterGain: number;
-};
+type SettingsState = UserSettings;
 
 type AppState = {
   currentProjectId?: string;
@@ -39,7 +39,10 @@ type AppState = {
   setError: (error?: string) => void;
 };
 
-export const useAppStore = create<AppState>((set) => ({
+type PersistedAppState = Pick<AppState, "settings">;
+
+export const useAppStore = create<AppState>()(
+  persist<AppState, [], [], PersistedAppState>((set) => ({
   selectedBank: "A",
   selectedPadIndex: 0,
   midiEnabled: false,
@@ -47,7 +50,7 @@ export const useAppStore = create<AppState>((set) => ({
   midiMessages: [],
   audio: { ready: false, usingWorklet: false, message: "Audio stopped" },
   sync: { configured: false, signedIn: false, syncing: false, message: "PocketBase is not configured" },
-  settings: { masterGain: 0.9 },
+  settings: defaultUserSettings,
   triggeredPads: {},
   setCurrentProjectId: (id) => set({ currentProjectId: id }),
   setSelectedBank: (bank) => set({ selectedBank: bank }),
@@ -58,12 +61,14 @@ export const useAppStore = create<AppState>((set) => ({
   setLearningPad: (pad) => set({ learningPad: pad }),
   setAudio: (audio) => set({ audio }),
   setSync: (sync) => set({ sync }),
-  setMasterGain: (masterGain) => set({ settings: { masterGain } }),
+  setMasterGain: (masterGain) => set({ settings: { masterGain: normalizeMasterGain(masterGain) } }),
   flashPad: (bank, padIndex) => {
     const key = `${bank}:${padIndex}`;
-    set((state) => ({ triggeredPads: { ...state.triggeredPads, [key]: Date.now() } }));
+    const triggeredAt = Date.now();
+    set((state) => ({ triggeredPads: { ...state.triggeredPads, [key]: triggeredAt } }));
     window.setTimeout(() => {
       set((state) => {
+        if (state.triggeredPads[key] !== triggeredAt) return state;
         const next = { ...state.triggeredPads };
         delete next[key];
         return { triggeredPads: next };
@@ -71,4 +76,15 @@ export const useAppStore = create<AppState>((set) => ({
     }, 180);
   },
   setError: (error) => set({ error })
+}), {
+  name: "webmpc-settings",
+  partialize: (state) => ({ settings: state.settings }),
+  merge: (persistedState, currentState) => ({
+    ...currentState,
+    settings: normalizeUserSettings(
+      typeof persistedState === "object" && persistedState !== null && "settings" in persistedState
+        ? persistedState.settings
+        : undefined
+    )
+  })
 }));

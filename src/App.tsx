@@ -4,6 +4,7 @@ import { ProjectList } from "./components/ProjectList";
 import { ensureDefaultMapping, getPads, getProject, getSamples, listProjects } from "./services/storage";
 import { useAppStore } from "./store/useAppStore";
 import type { Pad, Project, Sample } from "./types/models";
+import { chooseProjectId } from "./utils/projectSelection";
 
 export default function App() {
   const currentProjectId = useAppStore((state) => state.currentProjectId);
@@ -20,11 +21,18 @@ export default function App() {
   const refresh = useCallback(async (preferredProjectId?: string) => {
     const nextProjects = await listProjects();
     setProjects(nextProjects);
-    const selectedId = preferredProjectId ?? currentProjectId ?? nextProjects[0]?.id;
-    if (selectedId && selectedId !== currentProjectId) setCurrentProjectId(selectedId);
+    const storeProjectId = useAppStore.getState().currentProjectId;
+    const selectedId = chooseProjectId(nextProjects.map((project) => project.id), preferredProjectId, storeProjectId);
+    if (selectedId !== storeProjectId) setCurrentProjectId(selectedId);
     if (selectedId) {
       const [project, nextPads, nextSamples] = await Promise.all([getProject(selectedId), getPads(selectedId), getSamples(selectedId)]);
-      if (!project) return;
+      if (!project) {
+        setCurrentProjectId(undefined);
+        setPads([]);
+        setSamples([]);
+        setLoading(false);
+        return;
+      }
       setPads(nextPads);
       setSamples(nextSamples);
     } else {
@@ -32,7 +40,7 @@ export default function App() {
       setSamples([]);
     }
     setLoading(false);
-  }, [currentProjectId, setCurrentProjectId]);
+  }, [setCurrentProjectId]);
 
   useEffect(() => {
     void ensureDefaultMapping().then(() => refresh()).catch((error: unknown) => {
