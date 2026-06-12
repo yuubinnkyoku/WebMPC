@@ -4,6 +4,7 @@ import { updateProject } from "../services/storage";
 import { getSyncState } from "../services/sync";
 import { useAppStore } from "../store/useAppStore";
 import type { Pad, Project, Sample } from "../types/models";
+import { parseRequiredNumberInput } from "../utils/numberInput";
 import { AudioSetupButton } from "./AudioSetupButton";
 import { MidiPanel } from "./MidiPanel";
 import { PadGrid } from "./PadGrid";
@@ -22,7 +23,7 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
   const setSync = useAppStore((state) => state.setSync);
   const setError = useAppStore((state) => state.setError);
   const [draftName, setDraftName] = useState("");
-  const [draftBpm, setDraftBpm] = useState(120);
+  const [draftBpm, setDraftBpm] = useState("120");
 
   useEffect(() => {
     setSync(getSyncState());
@@ -30,7 +31,7 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
 
   useEffect(() => {
     setDraftName(project?.name ?? "");
-    setDraftBpm(project?.bpm ?? 120);
+    setDraftBpm(String(project?.bpm ?? 120));
   }, [project?.id, project?.name, project?.bpm]);
 
   async function loadSamples() {
@@ -41,7 +42,7 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
   async function saveProjectMetadata(updates: Partial<Pick<Project, "name" | "bpm">>) {
     if (!project) return;
     const name = updates.name?.trim() || project.name;
-    const bpm = updates.bpm ? Math.max(20, Math.min(300, updates.bpm)) : project.bpm;
+    const bpm = updates.bpm === undefined ? project.bpm : Math.max(20, Math.min(300, updates.bpm));
     if (name === project.name && bpm === project.bpm) return;
     try {
       await updateProject({
@@ -59,6 +60,16 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
     if (event.key === "Enter") {
       event.currentTarget.blur();
     }
+  }
+
+  function saveBpmDraft() {
+    if (!project) return;
+    const bpm = parseRequiredNumberInput(draftBpm);
+    if (bpm === undefined) {
+      setDraftBpm(String(project.bpm));
+      return;
+    }
+    void saveProjectMetadata({ bpm });
   }
 
   if (!project) {
@@ -97,8 +108,8 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
               min={20}
               max={300}
               value={draftBpm}
-              onBlur={() => void saveProjectMetadata({ bpm: draftBpm })}
-              onChange={(event) => setDraftBpm(Number(event.target.value))}
+              onBlur={saveBpmDraft}
+              onChange={(event) => setDraftBpm(event.target.value)}
               onKeyDown={saveOnEnter}
             />
           </label>

@@ -35,12 +35,12 @@ export async function importProjectFile(file: File): Promise<Project> {
   const parsed = parseExportedProject(await file.text());
   const now = Date.now();
   const idMap = new Map<string, string>();
-  const project: Project = { ...stripProjectRemoteId(parsed.project), id: makeId("project"), name: `${parsed.project.name} import`, updatedAt: now };
+  const project: Project = { ...stripProjectRemoteId(parsed.project), id: makeId("project"), name: `${parsed.project.name} import`, createdAt: now, updatedAt: now };
   const samples = await Promise.all(
     parsed.samples.map(async (sample) => {
       const newId = makeId("sample");
       idMap.set(sample.id, newId);
-      const importedSample: Sample = { ...stripSampleRemoteId(sample), id: newId, projectId: project.id, updatedAt: now };
+      const importedSample: Sample = { ...stripSampleRemoteId(sample), id: newId, projectId: project.id, createdAt: now, updatedAt: now };
       return { sample: importedSample, blob: sample.dataUrl ? await dataUrlToBlob(sample.dataUrl) : undefined };
     })
   );
@@ -107,7 +107,12 @@ export function validateProjectBundlePayload(payload: { project: unknown; pads: 
     typeof payload.project.name !== "string" ||
     !isFiniteNumber(payload.project.bpm) ||
     payload.project.bpm < 20 ||
-    payload.project.bpm > 300
+    payload.project.bpm > 300 ||
+    !isFiniteNumber(payload.project.createdAt) ||
+    payload.project.createdAt < 0 ||
+    !isFiniteNumber(payload.project.updatedAt) ||
+    payload.project.updatedAt < 0 ||
+    !isIntegerInRange(payload.project.version, 1, Number.MAX_SAFE_INTEGER)
   ) {
     throw new Error("Project bundle is missing project metadata.");
   }
@@ -129,6 +134,9 @@ export function validateProjectBundlePayload(payload: { project: unknown; pads: 
   const project = payload.project as Project;
   if (pads.some((pad) => pad.projectId !== project.id) || samples.some((sample) => sample.projectId !== project.id)) {
     throw new Error("Project bundle contains data for a different project.");
+  }
+  if (!hasCompletePadSet(pads)) {
+    throw new Error("Project bundle must contain one pad for each bank position.");
   }
   const sampleIds = new Set(samples.map((sample) => sample.id));
   if (pads.some((pad) => pad.sampleId !== undefined && !sampleIds.has(pad.sampleId))) {
@@ -159,6 +167,8 @@ function isExportedPad(value: unknown): boolean {
     isFiniteNumber(value.startMs) &&
     value.startMs >= 0 &&
     typeof value.oneShot === "boolean" &&
+    isFiniteNumber(value.updatedAt) &&
+    value.updatedAt >= 0 &&
     (value.sampleId === undefined || typeof value.sampleId === "string") &&
     (value.midiNote === undefined || isIntegerInRange(value.midiNote, 0, 127)) &&
     (value.endMs === undefined || (isFiniteNumber(value.endMs) && value.endMs >= 0)) &&
@@ -174,7 +184,13 @@ function isExportedSample(value: unknown): boolean {
     typeof value.hash === "string" &&
     typeof value.name === "string" &&
     typeof value.mimeType === "string" &&
-    typeof value.size === "number" &&
+    isFiniteNumber(value.size) &&
+    value.size >= 0 &&
+    (value.durationMs === undefined || (isFiniteNumber(value.durationMs) && value.durationMs >= 0)) &&
+    isFiniteNumber(value.createdAt) &&
+    value.createdAt >= 0 &&
+    isFiniteNumber(value.updatedAt) &&
+    value.updatedAt >= 0 &&
     (value.dataUrl === undefined || (typeof value.dataUrl === "string" && isAudioDataUrl(value.dataUrl)))
   );
 }
@@ -185,7 +201,10 @@ function isExportedMidiMapping(value: unknown): boolean {
     typeof value.id === "string" &&
     typeof value.name === "string" &&
     isRecord(value.mappings) &&
-    Object.values(value.mappings).every(isMidiMappingTarget)
+    Object.keys(value.mappings).every(isMidiNoteKey) &&
+    Object.values(value.mappings).every(isMidiMappingTarget) &&
+    isFiniteNumber(value.updatedAt) &&
+    value.updatedAt >= 0
   );
 }
 
@@ -195,6 +214,16 @@ function isMidiMappingTarget(value: unknown): boolean {
     (value.bank === "A" || value.bank === "B" || value.bank === "C" || value.bank === "D") &&
     isIntegerInRange(value.padIndex, 0, 15)
   );
+}
+
+function isMidiNoteKey(value: string): boolean {
+  return /^(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$/.test(value);
+}
+
+function hasCompletePadSet(pads: Pad[]): boolean {
+  if (pads.length !== 64) return false;
+  const positions = new Set(pads.map((pad) => `${pad.bank}:${pad.padIndex}`));
+  return positions.size === 64;
 }
 
 function isFiniteNumber(value: unknown): value is number {

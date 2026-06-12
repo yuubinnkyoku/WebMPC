@@ -81,11 +81,12 @@ export async function syncProject(projectId: string): Promise<SyncState> {
   const record = remoteId
     ? await pb.collection("webmpc_projects").update(remoteId, payload)
     : await pb.collection("webmpc_projects").create(payload);
-  await db.projects.put({ ...project, remoteId: record.id, updatedAt: Date.now() });
+  const syncedAt = Date.now();
+  await db.projects.put({ ...project, remoteId: record.id, updatedAt: syncedAt, version: project.version + 1 });
   await saveSyncMetadata({
     projectId,
     remoteId: record.id,
-    lastSyncedAt: Date.now(),
+    lastSyncedAt: syncedAt,
     remoteUpdatedAt: Date.parse(record.updated)
   });
   await uploadSampleFiles(record.id, samples);
@@ -129,6 +130,7 @@ export async function restoreRemoteProject(remoteId: string): Promise<Project> {
     id: projectId,
     remoteId: record.id,
     name: `${record.project.name} restored`,
+    createdAt: now,
     updatedAt: now
   };
 
@@ -141,6 +143,7 @@ export async function restoreRemoteProject(remoteId: string): Promise<Project> {
         ...sample,
         id: nextSampleId,
         projectId,
+        createdAt: now,
         updatedAt: now,
         remoteFileId: sample.remoteFileId
       };

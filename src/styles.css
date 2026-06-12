@@ -139,6 +139,12 @@ aside,
   gap: 12px;
 }
 
+.panel-heading,
+.button-row,
+.chip-row {
+  flex-wrap: wrap;
+}
+
 .project-fields {
   display: grid;
   grid-template-columns: minmax(180px, 280px) 88px;
@@ -427,6 +433,25 @@ aside,
     padding: 12px;
   }
 
+  .topbar,
+  .editor-head,
+  .compact,
+  .panel-heading,
+  .mapping-status,
+  .remote-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .button-row,
+  .chip-row {
+    justify-content: flex-start;
+  }
+
+  .segmented {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   .pad-grid {
     grid-template-columns: repeat(4, minmax(62px, 1fr));
     gap: 7px;
@@ -442,5 +467,18 @@ aside,
   .project-fields {
     grid-template-columns: 1fr;
     flex-direction: column;
+  }
+
+  .mapping-status div {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mapping-status span {
+    text-align: left;
+  }
+
+  .midi-row {
+    grid-template-columns: 1fr;
   }
 }

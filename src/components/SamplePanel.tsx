@@ -3,6 +3,7 @@ import { deleteSample, importSample, savePad } from "../services/storage";
 import { useAppStore } from "../store/useAppStore";
 import type { Pad, Sample } from "../types/models";
 import { formatBytes, formatDurationMs } from "../utils/format";
+import { parseOptionalNumberInput, parseRequiredNumberInput } from "../utils/numberInput";
 
 type Props = {
   projectId: string;
@@ -35,8 +36,12 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
 
   async function updatePad(updates: Partial<Pad>) {
     if (!pad) return;
-    await savePad({ ...pad, ...updates });
-    await onRefresh(projectId);
+    try {
+      await savePad({ ...pad, ...updates });
+      await onRefresh(projectId);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Unable to update pad.");
+    }
   }
 
   async function removeAssignedSample() {
@@ -77,7 +82,15 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
       </div>
       <label className="field">
         Import audio
-        <input type="file" accept="audio/*" onChange={(event) => void handleFile(event.target.files?.[0])} />
+        <input
+          type="file"
+          accept="audio/*"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            void handleFile(file);
+          }}
+        />
       </label>
       <label className="field">
         Assigned sample
@@ -120,7 +133,17 @@ function NumberField({ label, value, min, max, step, onChange }: { label: string
   return (
     <label className="field">
       {label}
-      <input type="number" value={value} min={min} max={max} step={step} onChange={(event) => void onChange(Number(event.target.value))} />
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => {
+          const nextValue = parseRequiredNumberInput(event.target.value);
+          if (nextValue !== undefined) void onChange(nextValue);
+        }}
+      />
     </label>
   );
 }
@@ -149,7 +172,7 @@ function OptionalNumberField({
         min={min}
         max={max}
         step={step}
-        onChange={(event) => void onChange(event.target.value === "" ? undefined : Number(event.target.value))}
+        onChange={(event) => void onChange(parseOptionalNumberInput(event.target.value))}
       />
     </label>
   );

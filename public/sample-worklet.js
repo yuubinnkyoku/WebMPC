@@ -21,7 +21,7 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
 
     if (message.type === "unloadSample") {
       this.samples.delete(message.sampleId);
-      this.voices = this.voices.filter((voice) => voice.sampleId !== message.sampleId);
+      this.stopVoices((voice) => voice.sampleId === message.sampleId);
       return;
     }
 
@@ -31,7 +31,7 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
           this.samples.delete(sampleId);
         }
       }
-      this.voices = this.voices.filter((voice) => voice.projectId !== message.projectId);
+      this.stopVoices((voice) => voice.projectId === message.projectId);
       return;
     }
 
@@ -47,7 +47,7 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
         }
       }
       const startFrame = Math.max(0, Math.floor(((message.startMs ?? 0) / 1000) * sample.sampleRate));
-      const endFrame = message.endMs ? Math.min(sample.length, Math.floor((message.endMs / 1000) * sample.sampleRate)) : sample.length;
+      const endFrame = message.endMs === undefined ? sample.length : Math.min(sample.length, Math.floor((message.endMs / 1000) * sample.sampleRate));
       if (endFrame <= startFrame) return;
       this.voices.push({
         padId: message.padId,
@@ -79,7 +79,13 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
     }
 
     if (message.type === "stopAll") {
-      for (const voice of this.voices) {
+      this.stopVoices(() => true);
+    }
+  }
+
+  stopVoices(predicate) {
+    for (const voice of this.voices) {
+      if (predicate(voice)) {
         voice.stopping = true;
         voice.releaseAge = 0;
       }

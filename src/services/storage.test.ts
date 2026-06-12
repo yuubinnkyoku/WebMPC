@@ -10,6 +10,7 @@ import {
   ensureDefaultMapping,
   getPads,
   getProject,
+  getMidiMappings,
   getSampleBlob,
   getSamples,
   getSyncMetadata,
@@ -237,6 +238,7 @@ describe("local storage and project bundles", () => {
 
   it("exports and imports a project with pads and sample files", async () => {
     const project = await createProject("Bundle test");
+    await ensureDefaultMapping();
     await db.projects.put({ ...project, remoteId: "remote_original" });
     const file = new File([new Uint8Array([9, 8, 7, 6])], "snare.wav", { type: "audio/wav" });
     const sample = await importSample(project.id, file, 250);
@@ -249,24 +251,58 @@ describe("local storage and project bundles", () => {
     const exported = await exportProject(project.id);
     expect(exported.samples[0]?.dataUrl).toContain("data:audio/wav");
 
+    const beforeImport = Date.now();
     const bundle = new File([JSON.stringify(exported)], "bundle.webmpc.json", { type: "application/json" });
     const importedProject = await importProjectFile(bundle);
+    await importProjectFile(bundle);
     const importedPads = await getPads(importedProject.id);
     const importedSamples = await getSamples(importedProject.id);
     const importedPad = importedPads.find((pad) => pad.bank === "A" && pad.padIndex === 0);
     const importedBlob = importedSamples[0] ? await getSampleBlob(importedSamples[0].id) : undefined;
+    const midiMappings = await getMidiMappings();
 
     expect(importedProject.id).not.toBe(project.id);
     expect(importedProject.remoteId).toBeUndefined();
+    expect(importedProject.createdAt).toBeGreaterThanOrEqual(beforeImport);
+    expect(importedProject.updatedAt).toBeGreaterThanOrEqual(beforeImport);
     expect(importedSamples).toHaveLength(1);
     expect(importedSamples[0]?.remoteFileId).toBeUndefined();
+    expect(importedSamples[0]?.createdAt).toBeGreaterThanOrEqual(beforeImport);
+    expect(importedSamples[0]?.updatedAt).toBeGreaterThanOrEqual(beforeImport);
     expect(importedPad?.sampleId).toBe(importedSamples[0]?.id);
     expect(importedPad?.gain).toBe(0.75);
     expect(importedPad?.pitch).toBe(2);
     expect(importedBlob?.size).toBe(4);
+    expect(midiMappings.filter((mapping) => mapping.name === "MPD218 default")).toHaveLength(1);
   });
 
   it("rejects malformed project bundles before importing", async () => {
+    const validProject = { id: "project_1", name: "Broken", bpm: 120, createdAt: 1, updatedAt: 1, version: 1 };
+    const validSample = {
+      id: "sample_1",
+      projectId: "project_1",
+      hash: "hash",
+      name: "kick.wav",
+      mimeType: "audio/wav",
+      size: 4,
+      createdAt: 1,
+      updatedAt: 1
+    };
+    const validPads = ["A", "B", "C", "D"].flatMap((bank) =>
+      Array.from({ length: 16 }, (_, padIndex) => ({
+        id: `pad_${bank}_${padIndex}`,
+        projectId: "project_1",
+        bank,
+        padIndex,
+        gain: 1,
+        pan: 0,
+        pitch: 0,
+        startMs: 0,
+        oneShot: true,
+        updatedAt: 1
+      }))
+    );
+
     expect(() => parseExportedProject("{")).toThrow("Project bundle is not valid JSON.");
     expect(() => parseExportedProject(JSON.stringify({ format: "other" }))).toThrow("Unsupported project export format.");
     expect(() => parseExportedProject(JSON.stringify({ format: "webmpc-project", project: {}, pads: [], samples: [], midiMappings: [] }))).toThrow(
@@ -276,7 +312,7 @@ describe("local storage and project bundles", () => {
       parseExportedProject(
         JSON.stringify({
           format: "webmpc-project",
-          project: { id: "project_1", name: "Broken", bpm: 120 },
+          project: validProject,
           pads: {},
           samples: [],
           midiMappings: []
@@ -287,8 +323,8 @@ describe("local storage and project bundles", () => {
       parseExportedProject(
         JSON.stringify({
           format: "webmpc-project",
-          project: { id: "project_1", name: "Broken", bpm: 999 },
-          pads: [],
+          project: { ...validProject, bpm: 999 },
+          pads: validPads,
           samples: [],
           midiMappings: []
         })
@@ -298,16 +334,33 @@ describe("local storage and project bundles", () => {
       parseExportedProject(
         JSON.stringify({
           format: "webmpc-project",
-          project: { id: "project_1", name: "Broken", bpm: 120 },
+          project: validProject,
           pads: [],
+          samples: [],
+          midiMappings: []
+        })
+      )
+    ).toThrow("Project bundle must contain one pad for each bank position.");
+    expect(() =>
+      parseExportedProject(
+        JSON.stringify({
+          format: "webmpc-project",
+          project: validProject,
+          pads: validPads.map((pad, index) => (index === 1 ? { ...pad, bank: "A", padIndex: 0 } : pad)),
+          samples: [],
+          midiMappings: []
+        })
+      )
+    ).toThrow("Project bundle must contain one pad for each bank position.");
+    expect(() =>
+      parseExportedProject(
+        JSON.stringify({
+          format: "webmpc-project",
+          project: validProject,
+          pads: validPads,
           samples: [
             {
-              id: "sample_1",
-              projectId: "project_1",
-              hash: "hash",
-              name: "kick.wav",
-              mimeType: "audio/wav",
-              size: 4,
+              ...validSample,
               dataUrl: "https://example.com/kick.wav"
             }
           ],
@@ -319,22 +372,8 @@ describe("local storage and project bundles", () => {
       parseExportedProject(
         JSON.stringify({
           format: "webmpc-project",
-          project: { id: "project_1", name: "Broken", bpm: 120 },
-          pads: [
-            {
-              id: "pad_1",
-              projectId: "project_1",
-              bank: "A",
-              padIndex: 0,
-              sampleId: "missing_sample",
-              gain: 1,
-              pan: 0,
-              pitch: 0,
-              startMs: 0,
-              oneShot: true,
-              updatedAt: 1
-            }
-          ],
+          project: validProject,
+          pads: validPads.map((pad, index) => (index === 0 ? { ...pad, sampleId: "missing_sample" } : pad)),
           samples: [],
           midiMappings: []
         })
@@ -344,21 +383,8 @@ describe("local storage and project bundles", () => {
       parseExportedProject(
         JSON.stringify({
           format: "webmpc-project",
-          project: { id: "project_1", name: "Broken", bpm: 120 },
-          pads: [
-            {
-              id: "pad_1",
-              projectId: "project_2",
-              bank: "A",
-              padIndex: 0,
-              gain: 1,
-              pan: 0,
-              pitch: 0,
-              startMs: 0,
-              oneShot: true,
-              updatedAt: 1
-            }
-          ],
+          project: validProject,
+          pads: validPads.map((pad, index) => (index === 0 ? { ...pad, projectId: "project_2" } : pad)),
           samples: [],
           midiMappings: []
         })
@@ -368,16 +394,12 @@ describe("local storage and project bundles", () => {
       parseExportedProject(
         JSON.stringify({
           format: "webmpc-project",
-          project: { id: "project_1", name: "Broken", bpm: 120 },
-          pads: [],
+          project: validProject,
+          pads: validPads,
           samples: [
             {
-              id: "sample_1",
+              ...validSample,
               projectId: "project_2",
-              hash: "hash",
-              name: "kick.wav",
-              mimeType: "audio/wav",
-              size: 4
             }
           ],
           midiMappings: []
@@ -388,22 +410,8 @@ describe("local storage and project bundles", () => {
       parseExportedProject(
         JSON.stringify({
           format: "webmpc-project",
-          project: { id: "project_1", name: "Broken", bpm: 120 },
-          pads: [
-            {
-              id: "pad_1",
-              projectId: "project_1",
-              bank: "A",
-              padIndex: 16,
-              midiNote: 128,
-              gain: 1,
-              pan: 0,
-              pitch: 0,
-              startMs: 0,
-              oneShot: true,
-              updatedAt: 1
-            }
-          ],
+          project: validProject,
+          pads: validPads.map((pad, index) => (index === 0 ? { ...pad, padIndex: 16, midiNote: 128 } : pad)),
           samples: [],
           midiMappings: []
         })
@@ -413,10 +421,21 @@ describe("local storage and project bundles", () => {
       parseExportedProject(
         JSON.stringify({
           format: "webmpc-project",
-          project: { id: "project_1", name: "Broken", bpm: 120 },
-          pads: [],
+          project: validProject,
+          pads: validPads,
           samples: [],
           midiMappings: [{ id: "mapping_1", name: "Bad", mappings: { "36": { bank: "A", padIndex: 99 } }, updatedAt: 1 }]
+        })
+      )
+    ).toThrow("Project bundle contains invalid MIDI mapping data.");
+    expect(() =>
+      parseExportedProject(
+        JSON.stringify({
+          format: "webmpc-project",
+          project: validProject,
+          pads: validPads,
+          samples: [],
+          midiMappings: [{ id: "mapping_1", name: "Bad", mappings: { "": { bank: "A", padIndex: 0 } }, updatedAt: 1 }]
         })
       )
     ).toThrow("Project bundle contains invalid MIDI mapping data.");

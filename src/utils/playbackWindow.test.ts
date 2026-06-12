@@ -17,6 +17,7 @@ describe("playback window", () => {
   it("returns no playback for invalid or empty ranges", () => {
     expect(getPlaybackWindow(0, 0)).toBeUndefined();
     expect(getPlaybackWindow(2, Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(getPlaybackWindow(2, 0, 0)).toBeUndefined();
     expect(getPlaybackWindow(2, 1000, 500)).toBeUndefined();
   });
 });

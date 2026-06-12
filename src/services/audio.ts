@@ -10,6 +10,8 @@ type LoadedSample = {
 type FallbackVoice = {
   source: AudioBufferSourceNode;
   gain: GainNode;
+  sampleId: string;
+  projectId: string;
   stopping: boolean;
 };
 
@@ -81,6 +83,7 @@ class AudioEngine {
 
   unloadSample(sampleId: string): void {
     this.samples.delete(sampleId);
+    this.stopMatchingFallbackVoices((voice) => voice.sampleId === sampleId);
     if (this.workletNode) {
       this.workletNode.port.postMessage({ type: "unloadSample", sampleId });
     }
@@ -92,6 +95,7 @@ class AudioEngine {
         this.samples.delete(sampleId);
       }
     }
+    this.stopMatchingFallbackVoices((voice) => voice.projectId === projectId);
     if (this.workletNode) {
       this.workletNode.port.postMessage({ type: "unloadProject", projectId });
     }
@@ -156,7 +160,7 @@ class AudioEngine {
     gain.connect(panner);
     panner.connect(this.master);
 
-    const voice: FallbackVoice = { source, gain, stopping: false };
+    const voice: FallbackVoice = { source, gain, sampleId: loaded.sample.id, projectId: loaded.sample.projectId, stopping: false };
     source.start(undefined, playbackWindow.startSeconds, playbackWindow.durationSeconds);
     this.fadeGain(gain, playbackWindow.durationSeconds);
     this.trackPadVoice(pad.id, voice);
@@ -164,7 +168,10 @@ class AudioEngine {
       const active = this.activeByChokeGroup.get(pad.chokeGroup) ?? [];
       active.push(voice);
       source.onended = () => {
-        this.activeByChokeGroup.set(pad.chokeGroup ?? "", active.filter((item) => item !== voice));
+        if (pad.chokeGroup) {
+          const current = this.activeByChokeGroup.get(pad.chokeGroup) ?? [];
+          this.activeByChokeGroup.set(pad.chokeGroup, current.filter((item) => item !== voice));
+        }
         this.untrackPadVoice(pad.id, voice);
       };
       this.activeByChokeGroup.set(pad.chokeGroup, active);
@@ -248,6 +255,32 @@ class AudioEngine {
   private untrackPadVoice(padId: string, voice: FallbackVoice): void {
     const active = this.activeByPad.get(padId) ?? [];
     this.activeByPad.set(padId, active.filter((item) => item !== voice));
+  }
+
+  private stopMatchingFallbackVoices(predicate: (voice: FallbackVoice) => boolean): void {
+    for (const active of this.activeByPad.values()) {
+      active.filter(predicate).forEach((voice) => this.stopVoice(voice));
+    }
+    this.pruneFallbackVoiceMaps(predicate);
+  }
+
+  private pruneFallbackVoiceMaps(predicate: (voice: FallbackVoice) => boolean): void {
+    for (const [padId, active] of this.activeByPad.entries()) {
+      const remaining = active.filter((voice) => !predicate(voice));
+      if (remaining.length > 0) {
+        this.activeByPad.set(padId, remaining);
+      } else {
+        this.activeByPad.delete(padId);
+      }
+    }
+    for (const [chokeGroup, active] of this.activeByChokeGroup.entries()) {
+      const remaining = active.filter((voice) => !predicate(voice));
+      if (remaining.length > 0) {
+        this.activeByChokeGroup.set(chokeGroup, remaining);
+      } else {
+        this.activeByChokeGroup.delete(chokeGroup);
+      }
+    }
   }
 
   private stopVoice(voice: FallbackVoice): void {

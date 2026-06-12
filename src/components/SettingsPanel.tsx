@@ -1,5 +1,6 @@
 import { downloadProject, importProjectFile } from "../services/exportImport";
 import { audioEngine } from "../services/audio";
+import { getSamples } from "../services/storage";
 import { useAppStore } from "../store/useAppStore";
 import { useState } from "react";
 
@@ -18,6 +19,7 @@ export function SettingsPanel({ projectId, onRefresh }: Props) {
     if (!file) return;
     try {
       const project = await importProjectFile(file);
+      await audioEngine.loadProjectSamples(await getSamples(project.id));
       await onRefresh(project.id);
       setToolStatus(`Imported ${project.name}`);
     } catch (error) {
@@ -61,7 +63,16 @@ export function SettingsPanel({ projectId, onRefresh }: Props) {
         <button disabled={!projectId} onClick={() => void exportCurrent()} aria-label="Export current project">Export project</button>
         <label className="file-button">
           Import project
-          <input aria-label="Import project bundle" type="file" accept=".json,.webmpc.json,application/json" onChange={(event) => void importFile(event.target.files?.[0])} />
+          <input
+            aria-label="Import project bundle"
+            type="file"
+            accept=".json,.webmpc.json,application/json"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              void importFile(file);
+            }}
+          />
         </label>
       </div>
       <p aria-live="polite">{toolStatus}</p>

@@ -291,6 +291,14 @@ export async function replaceProjectBundle(project: Project, pads: Pad[], sample
         samples.flatMap(({ sample, blob }) => (blob ? [{ sampleId: sample.id, projectId: sample.projectId, blob, updatedAt: Date.now() }] : []))
       );
     }
-    if (mappings.length > 0) await db.midiMappings.bulkPut(mappings);
+    if (mappings.length > 0) {
+      const mappingsToSave = await Promise.all(
+        mappings.map(async (mapping) => {
+          const existing = await db.midiMappings.where("name").equals(mapping.name).first();
+          return existing ? { ...mapping, id: existing.id } : mapping;
+        })
+      );
+      await db.midiMappings.bulkPut(mappingsToSave);
+    }
   });
 }
