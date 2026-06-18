@@ -81,6 +81,6 @@ export type ExportedProject = {
   exportedAt: number;
   project: Project;
   pads: Pad[];
-  samples: Array<Sample & { dataUrl?: string }>;
+  samples: Array<Sample & { dataUrl: string }>;
   midiMappings: MidiMapping[];
 };

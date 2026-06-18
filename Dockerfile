@@ -1,7 +1,7 @@
-FROM oven/bun:1 AS deps
+FROM oven/bun:1.3.14 AS deps
 WORKDIR /app
-COPY package.json bun.lock* ./
-RUN bun install --frozen-lockfile || bun install
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
 FROM deps AS build
 COPY . .

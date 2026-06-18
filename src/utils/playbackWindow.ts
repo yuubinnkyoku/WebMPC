@@ -3,6 +3,17 @@ export type PlaybackWindow = {
   durationSeconds: number;
 };
 
+export function getPlaybackRate(pitchSemitones: number): number {
+  if (!Number.isFinite(pitchSemitones)) return 1;
+  return Math.pow(2, pitchSemitones / 12);
+}
+
+export function getRenderedDurationSeconds(sourceDurationSeconds: number, playbackRate: number): number {
+  if (!Number.isFinite(sourceDurationSeconds) || sourceDurationSeconds <= 0) return 0;
+  if (!Number.isFinite(playbackRate) || playbackRate <= 0) return sourceDurationSeconds;
+  return sourceDurationSeconds / playbackRate;
+}
+
 export function getPlaybackWindow(sampleDurationSeconds: number, startMs: number, endMs?: number): PlaybackWindow | undefined {
   if (!Number.isFinite(sampleDurationSeconds) || sampleDurationSeconds <= 0) return undefined;
   const startSeconds = Math.max(0, startMs / 1000);

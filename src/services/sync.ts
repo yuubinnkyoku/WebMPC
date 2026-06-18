@@ -1,8 +1,13 @@
 import PocketBase, { type RecordModel } from "pocketbase";
 import type { Pad, Project, Sample } from "../types/models";
 import { makeId } from "../utils/id";
+import { stripProjectRemoteId, stripSampleRemoteFileId } from "../utils/localSyncMetadata";
 import { quotePocketBaseFilterValue } from "../utils/pocketbaseFilter";
-import { shouldPruneRemoteSample } from "../utils/remoteSamples";
+import { getRemoteProjectUpdatedAt, parsePocketBaseUpdatedAt } from "../utils/pocketbaseRecord";
+import { normalizeProjectName } from "../utils/projectName";
+import { toRemoteProjectSummary } from "../utils/remoteProjects";
+import { findMissingSampleBlobNames, mapRemoteSamplesBySampleId, shouldPruneRemoteSample } from "../utils/remoteSamples";
+import { formatSampleLoadFailureMessage, formatSampleName } from "../utils/sampleLoadMessage";
 import { decideSyncConflict } from "../utils/syncConflict";
 import { validateProjectBundlePayload } from "./exportImport";
 import { db, getPads, getSamples, replaceProjectBundle, saveSyncMetadata } from "./storage";
@@ -17,7 +22,7 @@ export type SyncState = {
 export type RemoteProjectSummary = {
   id: string;
   name: string;
-  updatedAt: number;
+  updatedAt?: number;
   sampleCount: number;
 };
 
@@ -63,11 +68,12 @@ export async function syncProject(projectId: string): Promise<SyncState> {
   if (!project) throw new Error("Project not found.");
   const pads = await getPads(projectId);
   const samples = await getSamples(projectId);
-  const payload = { project, pads, samples };
+  const sampleBlobs = await getRequiredSampleBlobs(samples, "Unable to upload missing sample file data for");
+  const payload = toRemoteSyncPayload(project, pads, samples);
   const remoteId = project.remoteId;
   if (remoteId) {
     const remote = await pb.collection<RemoteProjectRecord>("webmpc_projects").getOne(remoteId).catch(() => undefined);
-    const remoteUpdatedAt = remote?.project?.updatedAt;
+    const remoteUpdatedAt = getRemoteProjectUpdatedAt(remote?.project?.updatedAt, remote?.updated);
     const conflict = decideSyncConflict(project.updatedAt, remoteUpdatedAt);
     if (conflict.remoteIsNewer) {
       await saveSyncMetadata({
@@ -81,31 +87,29 @@ export async function syncProject(projectId: string): Promise<SyncState> {
   const record = remoteId
     ? await pb.collection("webmpc_projects").update(remoteId, payload)
     : await pb.collection("webmpc_projects").create(payload);
+  const projectWithRemoteId = assignRemoteProjectId(project, record.id);
+  if (projectWithRemoteId) {
+    await db.projects.put(projectWithRemoteId);
+  }
+  await uploadSampleFiles(record.id, samples, sampleBlobs);
+  await pruneRemoteSampleFiles(record.id, samples);
   const syncedAt = Date.now();
-  await db.projects.put({ ...project, remoteId: record.id, updatedAt: syncedAt, version: project.version + 1 });
   await saveSyncMetadata({
     projectId,
     remoteId: record.id,
     lastSyncedAt: syncedAt,
-    remoteUpdatedAt: Date.parse(record.updated)
+    remoteUpdatedAt: parsePocketBaseUpdatedAt(record.updated)
   });
-  await uploadSampleFiles(record.id, samples);
-  await pruneRemoteSampleFiles(record.id, samples);
   return { ...getSyncState(), message: `Synced ${project.name}` };
 }
 
 export async function listRemoteProjects(): Promise<RemoteProjectSummary[]> {
   if (!pb) throw new Error("PocketBase URL is not configured.");
   if (!pb.authStore.isValid) throw new Error("Sign in before listing remote projects.");
-  const records = await pb.collection<RemoteProjectRecord>("webmpc_projects").getList(1, 50, {
+  const records = await pb.collection<RemoteProjectRecord>("webmpc_projects").getFullList({
     sort: "-updated"
   });
-  return records.items.map((record) => ({
-    id: record.id,
-    name: record.project?.name ?? "Untitled remote project",
-    updatedAt: record.project?.updatedAt ?? Date.parse(record.updated),
-    sampleCount: record.samples?.length ?? 0
-  }));
+  return records.map(toRemoteProjectSummary);
 }
 
 export async function restoreRemoteProject(remoteId: string): Promise<Project> {
@@ -123,72 +127,63 @@ export async function restoreRemoteProject(remoteId: string): Promise<Project> {
   }
 
   const now = Date.now();
-  const projectId = makeId("project");
-  const sampleIdMap = new Map<string, string>();
-  const project: Project = {
-    ...record.project,
-    id: projectId,
-    remoteId: record.id,
-    name: `${record.project.name} restored`,
-    createdAt: now,
-    updatedAt: now
-  };
+  const restoredBundle = toRestoredProjectBundle(record.id, record.project, record.pads, record.samples, now, makeId);
 
   const remoteSampleFiles = await listRemoteSampleFiles(record.id);
   const samples = await Promise.all(
-    record.samples.map(async (sample) => {
-      const nextSampleId = makeId("sample");
-      sampleIdMap.set(sample.id, nextSampleId);
-      const restoredSample: Sample = {
-        ...sample,
-        id: nextSampleId,
-        projectId,
-        createdAt: now,
-        updatedAt: now,
-        remoteFileId: sample.remoteFileId
-      };
+    record.samples.map(async (sample, index) => {
       const remoteFile = remoteSampleFiles.get(sample.id);
       return {
-        sample: restoredSample,
+        sample: restoredBundle.samples[index],
         blob: remoteFile ? await downloadRemoteSampleBlob(remoteFile) : undefined
       };
     })
   );
+  const missingBlobNames = findMissingSampleBlobNames(
+    samples.map(({ sample }) => sample),
+    samples.map(({ blob }) => (blob ? { blob } : undefined))
+  );
+  if (missingBlobNames.length > 0) {
+    throw new Error(formatSampleLoadFailureMessage("Unable to restore missing remote sample file data for", missingBlobNames) ?? "Unable to restore missing remote sample file data.");
+  }
 
-  const pads: Pad[] = record.pads.map((pad) => ({
-    ...pad,
-    id: makeId("pad"),
-    projectId,
-    sampleId: pad.sampleId ? sampleIdMap.get(pad.sampleId) : undefined,
-    updatedAt: now
-  }));
-
-  await replaceProjectBundle(project, pads, samples, []);
+  await replaceProjectBundle(restoredBundle.project, restoredBundle.pads, samples, []);
   await saveSyncMetadata({
-    projectId: project.id,
+    projectId: restoredBundle.project.id,
     remoteId: record.id,
     lastSyncedAt: now,
-    remoteUpdatedAt: Date.parse(record.updated)
+    remoteUpdatedAt: parsePocketBaseUpdatedAt(record.updated)
   });
-  return project;
+  return restoredBundle.project;
 }
 
-async function uploadSampleFiles(remoteProjectId: string, samples: Sample[]): Promise<void> {
+async function getRequiredSampleBlobs(samples: Sample[], errorPrefix: string): Promise<Blob[]> {
+  const records = await db.sampleBlobs.bulkGet(samples.map((sample) => sample.id));
+  const missingBlobNames = findMissingSampleBlobNames(samples, records);
+  if (missingBlobNames.length > 0) {
+    throw new Error(formatSampleLoadFailureMessage(errorPrefix, missingBlobNames) ?? "Missing sample file data.");
+  }
+  return records.map((record) => record?.blob as Blob);
+}
+
+async function uploadSampleFiles(remoteProjectId: string, samples: Sample[], blobs: Blob[]): Promise<void> {
   if (!pb) return;
-  const blobs = await db.sampleBlobs.bulkGet(samples.map((sample) => sample.id));
   await Promise.all(
     samples.map(async (sample, index) => {
-      const blob = blobs[index]?.blob;
-      if (!blob) return;
+      const blob = blobs[index];
       const data = new FormData();
       data.set("project", remoteProjectId);
       data.set("sampleId", sample.id);
       data.set("file", blob, sample.name);
       const existing = await getRemoteSampleFile(remoteProjectId, sample.id);
-      if (existing) {
-        await pb.collection("webmpc_samples").update(existing.id, data).catch(() => undefined);
-      } else {
-        await pb.collection("webmpc_samples").create(data).catch(() => undefined);
+      try {
+        if (existing) {
+          await pb.collection("webmpc_samples").update(existing.id, data);
+        } else {
+          await pb.collection("webmpc_samples").create(data);
+        }
+      } catch {
+        throw new Error(`Unable to upload sample file ${formatSampleName(sample.name)}.`);
       }
     })
   );
@@ -215,13 +210,7 @@ async function listRemoteSampleFileRecords(remoteProjectId: string): Promise<Rem
 
 async function listRemoteSampleFiles(remoteProjectId: string): Promise<Map<string, RemoteSampleRecord>> {
   const records = await listRemoteSampleFileRecords(remoteProjectId);
-  const bySampleId = new Map<string, RemoteSampleRecord>();
-  records.forEach((record) => {
-    if (record.sampleId && !bySampleId.has(record.sampleId)) {
-      bySampleId.set(record.sampleId, record);
-    }
-  });
-  return bySampleId;
+  return mapRemoteSamplesBySampleId(records);
 }
 
 async function getRemoteSampleFile(remoteProjectId: string, sampleId: string): Promise<RemoteSampleRecord | undefined> {
@@ -238,11 +227,63 @@ async function downloadRemoteSampleBlob(record: RemoteSampleRecord): Promise<Blo
   if (!fileName) return undefined;
   const response = await fetch(pb.files.getURL(record, fileName));
   if (!response.ok) return undefined;
-  return response.blob();
+  const blob = await response.blob();
+  return blob.size > 0 ? blob : undefined;
 }
 
 export type SyncPayload = {
-  project: Project;
+  project: Omit<Project, "remoteId">;
   pads: Pad[];
-  samples: Sample[];
+  samples: Array<Omit<Sample, "remoteFileId">>;
 };
+
+export function toRemoteSyncPayload(project: Project, pads: Pad[], samples: Sample[]): SyncPayload {
+  return {
+    project: stripProjectRemoteId(project),
+    pads,
+    samples: samples.map(stripSampleRemoteFileId)
+  };
+}
+
+export function assignRemoteProjectId(project: Project, remoteId: string): Project | undefined {
+  return project.remoteId === remoteId ? undefined : { ...project, remoteId };
+}
+
+export function toRestoredProjectBundle(
+  remoteId: string,
+  remoteProject: Project,
+  remotePads: Pad[],
+  remoteSamples: Sample[],
+  now: number,
+  nextId: (prefix: string) => string
+): { project: Project; pads: Pad[]; samples: Sample[] } {
+  const projectId = nextId("project");
+  const sampleIdMap = new Map<string, string>();
+  const project: Project = {
+    ...remoteProject,
+    id: projectId,
+    remoteId,
+    name: normalizeProjectName(`${normalizeProjectName(remoteProject.name)} restored`),
+    createdAt: now,
+    updatedAt: now
+  };
+  const samples = remoteSamples.map((sample) => {
+    const nextSampleId = nextId("sample");
+    sampleIdMap.set(sample.id, nextSampleId);
+    return {
+      ...stripSampleRemoteFileId(sample),
+      id: nextSampleId,
+      projectId,
+      createdAt: now,
+      updatedAt: now
+    };
+  });
+  const pads = remotePads.map((pad) => ({
+    ...pad,
+    id: nextId("pad"),
+    projectId,
+    sampleId: pad.sampleId ? sampleIdMap.get(pad.sampleId) : undefined,
+    updatedAt: now
+  }));
+  return { project, pads, samples };
+}

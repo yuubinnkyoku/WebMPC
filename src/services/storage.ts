@@ -1,10 +1,11 @@
 import Dexie, { type Table } from "dexie";
 import type { Bank, MidiMapping, Pad, Project, Sample, SampleBlob, SyncMetadata } from "../types/models";
+import { BANKS } from "../utils/banks";
 import { isAudioFile } from "../utils/file";
 import { makeId } from "../utils/id";
 import { sha256Blob } from "../utils/hash";
-
-const banks: Bank[] = ["A", "B", "C", "D"];
+import { createMpd218Mappings, getMpd218NoteForPad, MPD218_DEVICE_NAME, MPD218_MAPPING_NAME, MPD218_NOTES } from "../utils/mpd218";
+import { normalizeProjectName } from "../utils/projectName";
 
 class WebMpcDatabase extends Dexie {
   projects!: Table<Project, string>;
@@ -46,7 +47,7 @@ function defaultPad(projectId: string, bank: Bank, padIndex: number, note?: numb
   };
 }
 
-export const mpd218Notes = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51];
+export const mpd218Notes = MPD218_NOTES;
 
 export async function createProject(name: string): Promise<Project> {
   const now = Date.now();
@@ -58,8 +59,8 @@ export async function createProject(name: string): Promise<Project> {
     updatedAt: now,
     version: 1
   };
-  const pads = banks.flatMap((bank) =>
-    Array.from({ length: 16 }, (_, index) => defaultPad(project.id, bank, index, bank === "A" ? mpd218Notes[index] : undefined))
+  const pads = BANKS.flatMap((bank) =>
+    Array.from({ length: 16 }, (_, index) => defaultPad(project.id, bank, index, getMpd218NoteForPad(bank, index)))
   );
   await db.transaction("rw", db.projects, db.pads, async () => {
     await db.projects.add(project);
@@ -77,7 +78,22 @@ export async function getProject(projectId: string): Promise<Project | undefined
 }
 
 export async function updateProject(project: Project): Promise<void> {
-  await db.projects.put({ ...normalizeProject(project), updatedAt: Date.now(), version: project.version + 1 });
+  await db.transaction("rw", db.projects, async () => {
+    const existing = await db.projects.get(project.id);
+    if (!existing) {
+      throw new Error("Project not found.");
+    }
+    const name = normalizeProjectName(project.name);
+    const bpm = clampFinite(project.bpm, 20, 300, 120);
+    if (existing.name === name && existing.bpm === bpm) return;
+    await db.projects.put({
+      ...existing,
+      name,
+      bpm,
+      updatedAt: Date.now(),
+      version: existing.version + 1
+    });
+  });
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
@@ -96,8 +112,40 @@ export async function getPads(projectId: string): Promise<Pad[]> {
 
 export async function savePad(pad: Pad): Promise<void> {
   const now = Date.now();
-  await db.transaction("rw", db.pads, db.projects, async () => {
-    await db.pads.put({ ...normalizePad(pad), updatedAt: now });
+  await db.transaction("rw", db.pads, db.projects, db.samples, async () => {
+    const normalizedPad = normalizePad(pad);
+    const existing = await db.pads.get(pad.id);
+    if (!existing) {
+      throw new Error("Pad not found.");
+    }
+    if (
+      existing.projectId !== normalizedPad.projectId ||
+      existing.bank !== normalizedPad.bank ||
+      existing.padIndex !== normalizedPad.padIndex
+    ) {
+      throw new Error("Pad identity cannot be changed.");
+    }
+    if (!(await db.projects.get(normalizedPad.projectId))) {
+      throw new Error("Pad project does not exist.");
+    }
+    if (normalizedPad.sampleId) {
+      const sample = await db.samples.get(normalizedPad.sampleId);
+      if (!sample || sample.projectId !== normalizedPad.projectId) {
+        throw new Error("Assigned sample does not belong to this project.");
+      }
+    }
+    const duplicateMidiPads =
+      normalizedPad.midiNote === undefined
+        ? []
+        : (await db.pads.where("midiNote").equals(normalizedPad.midiNote).toArray()).filter(
+            (candidate) => candidate.projectId === normalizedPad.projectId && candidate.id !== normalizedPad.id
+          );
+    const currentChanged = !arePadsEquivalent(existing, normalizedPad);
+    if (!currentChanged && duplicateMidiPads.length === 0) return;
+    await db.pads.bulkPut([
+      ...duplicateMidiPads.map((candidate) => ({ ...candidate, midiNote: undefined, updatedAt: now })),
+      ...(currentChanged ? [{ ...normalizedPad, updatedAt: now }] : [])
+    ]);
     await touchProjectRecord(pad.projectId, now);
   });
 }
@@ -110,6 +158,9 @@ export async function importSample(projectId: string, file: File, durationMs?: n
   if (!isAudioFile(file)) {
     throw new Error("Sample file must be an audio file.");
   }
+  if (file.size <= 0) {
+    throw new Error("Sample file must not be empty.");
+  }
   const now = Date.now();
   const hash = await sha256Blob(file);
   const sample: Sample = {
@@ -119,23 +170,19 @@ export async function importSample(projectId: string, file: File, durationMs?: n
     name: file.name,
     mimeType: file.type || "application/octet-stream",
     size: file.size,
-    durationMs,
+    durationMs: normalizeOptionalDuration(durationMs),
     createdAt: now,
     updatedAt: now
   };
   await db.transaction("rw", db.samples, db.sampleBlobs, db.projects, async () => {
+    if (!(await db.projects.get(projectId))) {
+      throw new Error("Project not found.");
+    }
     await db.samples.add(sample);
     await db.sampleBlobs.add({ sampleId: sample.id, projectId, blob: file, updatedAt: now });
     await touchProjectRecord(projectId, now);
   });
   return sample;
-}
-
-export async function putImportedSample(sample: Sample, blob: Blob): Promise<void> {
-  await db.transaction("rw", db.samples, db.sampleBlobs, async () => {
-    await db.samples.put(sample);
-    await db.sampleBlobs.put({ sampleId: sample.id, projectId: sample.projectId, blob, updatedAt: Date.now() });
-  });
 }
 
 export async function getSampleBlob(sampleId: string): Promise<Blob | undefined> {
@@ -161,8 +208,10 @@ export async function updateSampleDuration(sampleId: string, durationMs: number)
   const now = Date.now();
   await db.transaction("rw", db.samples, db.projects, async () => {
     const sample = await db.samples.get(sampleId);
-    if (!sample || sample.durationMs === durationMs) return;
-    await db.samples.put({ ...sample, durationMs, updatedAt: now });
+    if (!sample) return;
+    const normalizedDurationMs = normalizeOptionalDuration(durationMs);
+    if (sample.durationMs === normalizedDurationMs) return;
+    await db.samples.put({ ...sample, durationMs: normalizedDurationMs, updatedAt: now });
     await touchProjectRecord(sample.projectId, now);
   });
 }
@@ -172,26 +221,50 @@ export async function getMidiMappings(): Promise<MidiMapping[]> {
 }
 
 export async function saveMidiMapping(mapping: MidiMapping): Promise<void> {
-  await db.midiMappings.put({ ...mapping, updatedAt: Date.now() });
+  const normalized = normalizeMidiMapping(mapping);
+  await db.transaction("rw", db.midiMappings, async () => {
+    const [existingById, existingByName] = await Promise.all([
+      db.midiMappings.get(normalized.id),
+      db.midiMappings.where("name").equals(normalized.name).first()
+    ]);
+    if (existingByName && existingByName.id !== normalized.id) {
+      throw new Error(`MIDI mapping "${normalized.name}" already exists.`);
+    }
+    if (existingById && areMidiMappingsEquivalent(existingById, normalized)) return;
+    await db.midiMappings.put({ ...normalized, updatedAt: Date.now() });
+  });
 }
 
-export async function applyMidiMapping(projectId: string, mappingName = "MPD218 default"): Promise<void> {
+export async function applyMidiMapping(projectId: string, mappingName = MPD218_MAPPING_NAME): Promise<void> {
+  if (!(await db.projects.get(projectId))) {
+    throw new Error("Project not found.");
+  }
   const mapping = await db.midiMappings.where("name").equals(mappingName).first();
   if (!mapping) {
     throw new Error(`MIDI mapping "${mappingName}" was not found.`);
   }
   const pads = await getPads(projectId);
   const padsByPosition = new Map(pads.map((pad) => [`${pad.bank}:${pad.padIndex}`, pad]));
-  const now = Date.now();
-  const updatedPads = Object.entries(mapping.mappings).flatMap(([note, target]) => {
+  const desiredNoteByPadId = new Map<string, number>();
+  const mappedNotes = new Set<number>();
+  for (const [note, target] of Object.entries(mapping.mappings)) {
     const pad = padsByPosition.get(`${target.bank}:${target.padIndex}`);
     const midiNote = Number(note);
-    return pad && isIntegerInRange(midiNote, 0, 127) ? [{ ...normalizePad({ ...pad, midiNote }), updatedAt: now }] : [];
-  });
-  await db.transaction("rw", db.pads, db.projects, async () => {
-    if (updatedPads.length > 0) {
-      await db.pads.bulkPut(updatedPads);
+    if (pad && isIntegerInRange(midiNote, 0, 127)) {
+      desiredNoteByPadId.set(pad.id, midiNote);
+      mappedNotes.add(midiNote);
     }
+  }
+  const now = Date.now();
+  const updatedPads = pads.flatMap((pad) => {
+    const desiredNote = desiredNoteByPadId.get(pad.id);
+    const midiNote = desiredNote ?? (pad.midiNote !== undefined && mappedNotes.has(pad.midiNote) ? undefined : pad.midiNote);
+    if (pad.midiNote === midiNote) return [];
+    return [{ ...pad, midiNote, updatedAt: now }];
+  });
+  if (updatedPads.length === 0) return;
+  await db.transaction("rw", db.pads, db.projects, async () => {
+    await db.pads.bulkPut(updatedPads);
     await touchProjectRecord(projectId, now);
   });
 }
@@ -208,9 +281,74 @@ function normalizePad(pad: Pad): Pad {
   };
 }
 
+function normalizeMidiMapping(mapping: MidiMapping): MidiMapping {
+  const name = mapping.name.trim();
+  if (!mapping.id || !name) {
+    throw new Error("MIDI mapping requires an ID and name.");
+  }
+  const targets = new Set<string>();
+  for (const [note, target] of Object.entries(mapping.mappings)) {
+    const midiNote = Number(note);
+    const targetKey = `${target.bank}:${target.padIndex}`;
+    if (
+      !/^(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$/.test(note) ||
+      !isIntegerInRange(midiNote, 0, 127) ||
+      !BANKS.includes(target.bank) ||
+      !isIntegerInRange(target.padIndex, 0, 15) ||
+      targets.has(targetKey)
+    ) {
+      throw new Error("MIDI mapping contains an invalid or duplicate target.");
+    }
+    targets.add(targetKey);
+  }
+  return {
+    ...mapping,
+    name,
+    deviceName: mapping.deviceName?.trim() || undefined
+  };
+}
+
+function areMidiMappingsEquivalent(left: MidiMapping, right: MidiMapping): boolean {
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    left.deviceName === right.deviceName &&
+    JSON.stringify(left.mappings) === JSON.stringify(right.mappings)
+  );
+}
+
+function arePadsEquivalent(left: Pad, right: Pad): boolean {
+  return (
+    left.id === right.id &&
+    left.projectId === right.projectId &&
+    left.bank === right.bank &&
+    left.padIndex === right.padIndex &&
+    left.midiNote === right.midiNote &&
+    left.sampleId === right.sampleId &&
+    left.gain === right.gain &&
+    left.pan === right.pan &&
+    left.pitch === right.pitch &&
+    left.startMs === right.startMs &&
+    left.endMs === right.endMs &&
+    left.chokeGroup === right.chokeGroup &&
+    left.oneShot === right.oneShot
+  );
+}
+
+function normalizeSample(sample: Sample): Sample {
+  return {
+    ...sample,
+    durationMs: normalizeOptionalDuration(sample.durationMs)
+  };
+}
+
 function normalizeOptionalPositive(value: number, max: number): number | undefined {
   if (!Number.isFinite(value) || value <= 0) return undefined;
   return Math.min(value, max);
+}
+
+function normalizeOptionalDuration(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function clampFinite(value: number, min: number, max: number, fallback: number): number {
@@ -230,37 +368,49 @@ function normalizeProject(project: Project): Project {
   };
 }
 
-function normalizeProjectName(name: string): string {
-  const trimmed = name.trim();
-  return trimmed.length > 0 ? trimmed.slice(0, 120) : "New kit";
-}
-
 export async function getSyncMetadata(projectId: string): Promise<SyncMetadata | undefined> {
   return db.syncMetadata.where("projectId").equals(projectId).first();
 }
 
 export async function saveSyncMetadata(metadata: Omit<SyncMetadata, "id" | "updatedAt">): Promise<SyncMetadata> {
-  const existing = await getSyncMetadata(metadata.projectId);
-  const now = Date.now();
-  const next: SyncMetadata = {
-    id: existing?.id ?? makeId("sync"),
-    ...existing,
+  return db.transaction("rw", db.syncMetadata, db.projects, async () => {
+    if (!(await db.projects.get(metadata.projectId))) {
+      throw new Error("Project not found.");
+    }
+    const existing = await getSyncMetadata(metadata.projectId);
+    const now = Date.now();
+    const next: SyncMetadata = {
+      id: existing?.id ?? makeId("sync"),
+      ...existing,
+      ...normalizeSyncMetadataInput(metadata),
+      updatedAt: now
+    };
+    await db.syncMetadata.put(next);
+    return next;
+  });
+}
+
+function normalizeSyncMetadataInput(metadata: Omit<SyncMetadata, "id" | "updatedAt">): Omit<SyncMetadata, "id" | "updatedAt"> {
+  return {
     ...metadata,
-    updatedAt: now
+    remoteId: metadata.remoteId?.trim() || undefined,
+    lastSyncedAt: normalizeOptionalTimestamp(metadata.lastSyncedAt),
+    remoteUpdatedAt: normalizeOptionalTimestamp(metadata.remoteUpdatedAt)
   };
-  await db.syncMetadata.put(next);
-  return next;
+}
+
+function normalizeOptionalTimestamp(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 export async function ensureDefaultMapping(): Promise<MidiMapping> {
-  const existing = await db.midiMappings.where("name").equals("MPD218 default").first();
+  const existing = await db.midiMappings.where("name").equals(MPD218_MAPPING_NAME).first();
   if (existing) return existing;
-  const mappings = Object.fromEntries(mpd218Notes.map((note, index) => [String(note), { bank: "A" as const, padIndex: index }]));
   const mapping: MidiMapping = {
     id: makeId("mapping"),
-    name: "MPD218 default",
-    deviceName: "MPD218",
-    mappings,
+    name: MPD218_MAPPING_NAME,
+    deviceName: MPD218_DEVICE_NAME,
+    mappings: createMpd218Mappings(),
     updatedAt: Date.now()
   };
   await saveMidiMapping(mapping);
@@ -279,16 +429,28 @@ async function touchProjectRecord(projectId: string, updatedAt = Date.now()): Pr
 }
 
 export async function replaceProjectBundle(project: Project, pads: Pad[], samples: Array<{ sample: Sample; blob?: Blob }>, mappings: MidiMapping[]): Promise<void> {
+  const normalizedProject = normalizeProject(project);
+  const normalizedPads = pads.map(normalizePad);
+  const normalizedSamples = samples.map(({ sample, blob }) => ({ sample: normalizeSample(sample), blob }));
+  await validateReplacementBundle(normalizedProject, normalizedPads, normalizedSamples, mappings);
   await db.transaction("rw", [db.projects, db.pads, db.samples, db.sampleBlobs, db.midiMappings, db.syncMetadata], async () => {
-    await db.projects.put(project);
+    await validateReplacementRecordOwnership(normalizedProject.id, normalizedPads, normalizedSamples);
+    await validateReplacementMappingOwnership(mappings);
+    await db.projects.put(normalizedProject);
     await db.pads.where("projectId").equals(project.id).delete();
     await db.samples.where("projectId").equals(project.id).delete();
     await db.sampleBlobs.where("projectId").equals(project.id).delete();
-    await db.pads.bulkPut(pads);
-    if (samples.length > 0) {
-      await db.samples.bulkPut(samples.map(({ sample }) => sample));
+    await db.syncMetadata.where("projectId").equals(project.id).delete();
+    await db.pads.bulkPut(normalizedPads);
+    if (normalizedSamples.length > 0) {
+      await db.samples.bulkPut(normalizedSamples.map(({ sample }) => sample));
       await db.sampleBlobs.bulkPut(
-        samples.flatMap(({ sample, blob }) => (blob ? [{ sampleId: sample.id, projectId: sample.projectId, blob, updatedAt: Date.now() }] : []))
+        normalizedSamples.map(({ sample, blob }) => ({
+          sampleId: sample.id,
+          projectId: sample.projectId,
+          blob: blob as Blob,
+          updatedAt: Date.now()
+        }))
       );
     }
     if (mappings.length > 0) {
@@ -301,4 +463,131 @@ export async function replaceProjectBundle(project: Project, pads: Pad[], sample
       await db.midiMappings.bulkPut(mappingsToSave);
     }
   });
+}
+
+async function validateReplacementRecordOwnership(
+  projectId: string,
+  pads: Pad[],
+  samples: Array<{ sample: Sample }>
+): Promise<void> {
+  const existingPads = await db.pads.bulkGet(pads.map((pad) => pad.id));
+  if (existingPads.some((pad) => pad && pad.projectId !== projectId)) {
+    throw new Error("Project bundle contains a pad ID owned by another project.");
+  }
+  const existingSamples = await db.samples.bulkGet(samples.map(({ sample }) => sample.id));
+  if (existingSamples.some((sample) => sample && sample.projectId !== projectId)) {
+    throw new Error("Project bundle contains a sample ID owned by another project.");
+  }
+}
+
+async function validateReplacementMappingOwnership(mappings: MidiMapping[]): Promise<void> {
+  const existingMappings = await db.midiMappings.bulkGet(mappings.map((mapping) => mapping.id));
+  if (existingMappings.some((existing, index) => existing && existing.name !== mappings[index]?.name)) {
+    throw new Error("Project bundle contains a MIDI mapping ID owned by another mapping.");
+  }
+}
+
+async function validateReplacementBundle(
+  project: Project,
+  pads: Pad[],
+  samples: Array<{ sample: Sample; blob?: Blob }>,
+  mappings: MidiMapping[]
+): Promise<void> {
+  if (
+    !project.id ||
+    !Number.isFinite(project.createdAt) ||
+    project.createdAt < 0 ||
+    !Number.isFinite(project.updatedAt) ||
+    project.updatedAt < 0 ||
+    !Number.isInteger(project.version) ||
+    project.version < 1
+  ) {
+    throw new Error("Project bundle contains invalid project metadata.");
+  }
+  if (pads.length !== BANKS.length * 16) {
+    throw new Error("Project bundle must contain one pad for each bank position.");
+  }
+  const padIds = new Set<string>();
+  const positions = new Set<string>();
+  const midiNotes = new Set<number>();
+  for (const pad of pads) {
+    const position = `${pad.bank}:${pad.padIndex}`;
+    if (
+      !pad.id ||
+      pad.projectId !== project.id ||
+      !BANKS.includes(pad.bank) ||
+      !isIntegerInRange(pad.padIndex, 0, 15) ||
+      padIds.has(pad.id) ||
+      positions.has(position)
+    ) {
+      throw new Error("Project bundle contains invalid or duplicate pad data.");
+    }
+    if (pad.midiNote !== undefined && midiNotes.has(pad.midiNote)) {
+      throw new Error("Project bundle contains duplicate MIDI note assignments.");
+    }
+    padIds.add(pad.id);
+    positions.add(position);
+    if (pad.midiNote !== undefined) midiNotes.add(pad.midiNote);
+  }
+  const sampleIds = new Set<string>();
+  for (const { sample, blob } of samples) {
+    if (
+      !sample.id ||
+      sample.projectId !== project.id ||
+      sampleIds.has(sample.id) ||
+      !/^[a-f0-9]{64}$/i.test(sample.hash) ||
+      !sample.name ||
+      !sample.mimeType ||
+      !Number.isFinite(sample.size) ||
+      sample.size <= 0 ||
+      !Number.isFinite(sample.createdAt) ||
+      sample.createdAt < 0 ||
+      !Number.isFinite(sample.updatedAt) ||
+      sample.updatedAt < 0
+    ) {
+      throw new Error("Project bundle contains invalid or duplicate sample data.");
+    }
+    if (!blob || blob.size <= 0) {
+      throw new Error(`Project bundle is missing sample file data for ${sample.name || "unnamed sample"}.`);
+    }
+    if (blob.size !== sample.size) {
+      throw new Error(`Project bundle sample file size does not match metadata for ${sample.name}.`);
+    }
+    if ((await sha256Blob(blob)).toLowerCase() !== sample.hash.toLowerCase()) {
+      throw new Error(`Project bundle sample file hash does not match metadata for ${sample.name}.`);
+    }
+    sampleIds.add(sample.id);
+  }
+  if (pads.some((pad) => pad.sampleId && !sampleIds.has(pad.sampleId))) {
+    throw new Error("Project bundle contains pad sample references that do not exist.");
+  }
+  const mappingIds = new Set<string>();
+  const mappingNames = new Set<string>();
+  for (const mapping of mappings) {
+    const mappingTargets = new Set<string>();
+    if (
+      !mapping.id ||
+      !mapping.name ||
+      mappingIds.has(mapping.id) ||
+      mappingNames.has(mapping.name) ||
+      !Number.isFinite(mapping.updatedAt) ||
+      mapping.updatedAt < 0 ||
+      Object.entries(mapping.mappings).some(([note, target]) => {
+        const midiNote = Number(note);
+        const targetKey = `${target.bank}:${target.padIndex}`;
+        const invalid =
+          !/^(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$/.test(note) ||
+          !isIntegerInRange(midiNote, 0, 127) ||
+          !BANKS.includes(target.bank) ||
+          !isIntegerInRange(target.padIndex, 0, 15) ||
+          mappingTargets.has(targetKey);
+        mappingTargets.add(targetKey);
+        return invalid;
+      })
+    ) {
+      throw new Error("Project bundle contains invalid MIDI mapping data.");
+    }
+    mappingIds.add(mapping.id);
+    mappingNames.add(mapping.name);
+  }
 }

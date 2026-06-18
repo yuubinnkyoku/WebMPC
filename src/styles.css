@@ -139,6 +139,16 @@ aside,
   gap: 12px;
 }
 
+.editor-head > div,
+.project-select span {
+  min-width: 0;
+}
+
+.editor-head h1,
+.project-select span {
+  overflow-wrap: anywhere;
+}
+
 .panel-heading,
 .button-row,
 .chip-row {

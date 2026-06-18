@@ -11,7 +11,7 @@ export async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
 }
 
 export function isAudioDataUrl(value: string): boolean {
-  return /^data:audio\/[-+.\w]+;base64,[a-z0-9+/]+={0,2}$/i.test(value);
+  return /^data:audio\/[-+.\w]+;base64,(?:(?:[a-z0-9+/]{4})+(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?|[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)$/i.test(value);
 }
 
 export function isAudioFile(file: Pick<File, "name" | "type">): boolean {

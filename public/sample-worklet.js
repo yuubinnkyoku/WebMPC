@@ -103,8 +103,8 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
     for (const voice of this.voices) {
       const leftSource = voice.sample.channels[0];
       const rightSource = voice.sample.channels[1] ?? leftSource;
-      const totalFrames = voice.endFrame - voice.startFrame;
-      const fadeFrames = Math.max(1, Math.min(384, Math.floor(totalFrames / 2)));
+      const totalOutputFrames = (voice.endFrame - voice.startFrame) / voice.step;
+      const fadeFrames = Math.max(1, Math.min(384, Math.floor(totalOutputFrames / 2)));
       const releaseFrames = 384;
       const leftGain = voice.gain * (voice.pan <= 0 ? 1 : 1 - voice.pan);
       const rightGain = voice.gain * (voice.pan >= 0 ? 1 : 1 + voice.pan);
@@ -117,16 +117,16 @@ class WebMpcSampleProcessor extends AudioWorkletProcessor {
         const nextIndex = Math.min(sourceIndex + 1, voice.endFrame - 1);
         const leftSample = interpolate(leftSource[sourceIndex] ?? 0, leftSource[nextIndex] ?? 0, fraction);
         const rightSample = interpolate(rightSource[sourceIndex] ?? 0, rightSource[nextIndex] ?? 0, fraction);
-        const framesLeft = voice.endFrame - voice.position;
+        const outputFramesLeft = (voice.endFrame - voice.position) / voice.step;
         const fadeIn = Math.min(1, voice.age / fadeFrames);
-        const fadeOut = Math.min(1, framesLeft / fadeFrames);
+        const fadeOut = Math.min(1, outputFramesLeft / fadeFrames);
         const release = voice.stopping ? Math.max(0, 1 - voice.releaseAge / releaseFrames) : 1;
         const fade = Math.max(0, Math.min(fadeIn, fadeOut, release));
         left[frame] += leftSample * leftGain * fade;
         right[frame] += rightSample * rightGain * fade;
         voice.position += voice.step;
-        voice.age += voice.step;
-        if (voice.stopping) voice.releaseAge += voice.step;
+        voice.age += 1;
+        if (voice.stopping) voice.releaseAge += 1;
       }
 
       if (voice.position < voice.endFrame && (!voice.stopping || voice.releaseAge < releaseFrames)) remaining.push(voice);

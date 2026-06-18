@@ -18,6 +18,9 @@ describe("file utilities", () => {
     expect(isAudioDataUrl("data:audio/x-wav;base64,AQIDBA==")).toBe(true);
     expect(isAudioDataUrl("https://example.com/kick.wav")).toBe(false);
     expect(isAudioDataUrl("data:text/plain;base64,AQIDBA==")).toBe(false);
+    expect(isAudioDataUrl("data:audio/wav;base64,")).toBe(false);
+    expect(isAudioDataUrl("data:audio/wav;base64,A")).toBe(false);
+    expect(isAudioDataUrl("data:audio/wav;base64,AQIDBA===")).toBe(false);
 
     await expect(dataUrlToBlob("https://example.com/kick.wav")).rejects.toThrow("Sample data URL must be an audio base64 data URL.");
   });

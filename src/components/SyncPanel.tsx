@@ -3,6 +3,8 @@ import { audioEngine } from "../services/audio";
 import { getSamples, getSyncMetadata } from "../services/storage";
 import { getSyncState, listRemoteProjects, restoreRemoteProject, signIn, signOut, syncProject, type RemoteProjectSummary } from "../services/sync";
 import { useAppStore } from "../store/useAppStore";
+import { formatTimestamp } from "../utils/format";
+import { formatSampleLoadFailureMessage } from "../utils/sampleLoadMessage";
 
 type Props = {
   projectId?: string;
@@ -68,7 +70,8 @@ export function SyncPanel({ projectId, onRefresh }: Props) {
     try {
       setSync({ ...getSyncState(), syncing: true, message: "Restoring project..." });
       const project = await restoreRemoteProject(remoteId);
-      await audioEngine.loadProjectSamples(await getSamples(project.id));
+      const result = await audioEngine.loadProjectSamples(await getSamples(project.id));
+      setError(formatSampleLoadFailureMessage("Restored project, but could not load", result.failed));
       await onRefresh(project.id);
       await refreshLastSyncedAt(project.id);
       setSync({ ...getSyncState(), message: `Restored ${project.name}` });
@@ -88,11 +91,11 @@ export function SyncPanel({ projectId, onRefresh }: Props) {
         </div>
       </div>
       <p>{sync.message}</p>
-      <p>{lastSyncedAt ? `Last synced ${new Date(lastSyncedAt).toLocaleString()}` : "Not synced yet"}</p>
+      <p>{lastSyncedAt !== undefined ? `Last synced ${formatTimestamp(lastSyncedAt)}` : "Not synced yet"}</p>
       {sync.configured && !sync.signedIn ? (
         <div className="inline-form">
-          <input placeholder="email" value={email} onChange={(event) => setEmail(event.target.value)} />
-          <input placeholder="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          <input aria-label="PocketBase email" placeholder="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+          <input aria-label="PocketBase password" placeholder="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
           <button onClick={() => void login()}>Sign in</button>
         </div>
       ) : null}
@@ -103,9 +106,9 @@ export function SyncPanel({ projectId, onRefresh }: Props) {
             <div className="remote-row" key={project.id}>
               <div>
                 <strong>{project.name}</strong>
-                <small>{project.sampleCount} samples · {new Date(project.updatedAt).toLocaleString()}</small>
+                <small>{project.sampleCount} samples · {formatTimestamp(project.updatedAt, "Updated unknown")}</small>
               </div>
-              <button disabled={sync.syncing} onClick={() => void restore(project.id)}>Restore</button>
+              <button aria-label={`Restore ${project.name}`} disabled={sync.syncing} onClick={() => void restore(project.id)}>Restore</button>
             </div>
           ))}
         </div>

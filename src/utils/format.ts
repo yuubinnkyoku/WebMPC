@@ -19,3 +19,13 @@ export function formatDurationMs(durationMs?: number): string {
   const seconds = Math.floor(totalSeconds % 60);
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
+
+export function formatTimestamp(timestamp: number | undefined, fallback = "Unknown time"): string {
+  if (timestamp === undefined || !Number.isFinite(timestamp) || timestamp < 0) return fallback;
+  return new Date(timestamp).toLocaleString();
+}
+
+export function formatTimeOfDay(timestamp: number | undefined, fallback = "Unknown time"): string {
+  if (timestamp === undefined || !Number.isFinite(timestamp) || timestamp < 0) return fallback;
+  return new Date(timestamp).toLocaleTimeString();
+}

@@ -1,6 +1,10 @@
 import type { ExportedProject, MidiMapping, Pad, Project, Sample } from "../types/models";
 import { dataUrlToBlob, blobToDataUrl, downloadJson, isAudioDataUrl } from "../utils/file";
 import { makeId } from "../utils/id";
+import { stripProjectRemoteId, stripSampleRemoteFileId } from "../utils/localSyncMetadata";
+import { normalizeProjectName } from "../utils/projectName";
+import { findMissingSampleBlobNames } from "../utils/remoteSamples";
+import { formatSampleLoadFailureMessage } from "../utils/sampleLoadMessage";
 import { db, getMidiMappings, replaceProjectBundle } from "./storage";
 
 export async function exportProject(projectId: string): Promise<ExportedProject> {
@@ -10,16 +14,20 @@ export async function exportProject(projectId: string): Promise<ExportedProject>
   const samples = await db.samples.where("projectId").equals(projectId).toArray();
   const blobs = await db.sampleBlobs.where("projectId").equals(projectId).toArray();
   const blobBySample = new Map(blobs.map((entry) => [entry.sampleId, entry.blob]));
+  const missingBlobNames = findMissingSampleBlobNames(samples, samples.map((sample) => ({ blob: blobBySample.get(sample.id) })));
+  if (missingBlobNames.length > 0) {
+    throw new Error(formatSampleLoadFailureMessage("Unable to export missing sample file data for", missingBlobNames) ?? "Unable to export missing sample file data.");
+  }
   const samplesWithData = await Promise.all(
     samples.map(async (sample) => ({
-      ...sample,
-      dataUrl: blobBySample.has(sample.id) ? await blobToDataUrl(blobBySample.get(sample.id) as Blob) : undefined
+      ...stripSampleRemoteFileId(sample),
+      dataUrl: await blobToDataUrl(blobBySample.get(sample.id) as Blob)
     }))
   );
   return {
     format: "webmpc-project",
     exportedAt: Date.now(),
-    project,
+    project: stripProjectRemoteId(project),
     pads,
     samples: samplesWithData,
     midiMappings: await getMidiMappings()
@@ -28,20 +36,36 @@ export async function exportProject(projectId: string): Promise<ExportedProject>
 
 export async function downloadProject(projectId: string): Promise<void> {
   const exported = await exportProject(projectId);
-  downloadJson(`${exported.project.name.replaceAll(/\W+/g, "-").toLowerCase() || "webmpc"}.webmpc.json`, exported);
+  downloadJson(formatProjectExportFilename(exported.project.name), exported);
+}
+
+export function formatProjectExportFilename(projectName: string): string {
+  const slug = projectName
+    .trim()
+    .normalize("NFKC")
+    .replaceAll(/[^\p{L}\p{N}_]+/gu, "-")
+    .replaceAll(/^-+|-+$/g, "")
+    .toLowerCase();
+  return `${slug || "webmpc"}.webmpc.json`;
 }
 
 export async function importProjectFile(file: File): Promise<Project> {
   const parsed = parseExportedProject(await file.text());
   const now = Date.now();
   const idMap = new Map<string, string>();
-  const project: Project = { ...stripProjectRemoteId(parsed.project), id: makeId("project"), name: `${parsed.project.name} import`, createdAt: now, updatedAt: now };
+  const project: Project = {
+    ...stripProjectRemoteId(parsed.project),
+    id: makeId("project"),
+    name: normalizeProjectName(`${parsed.project.name} import`),
+    createdAt: now,
+    updatedAt: now
+  };
   const samples = await Promise.all(
     parsed.samples.map(async (sample) => {
       const newId = makeId("sample");
       idMap.set(sample.id, newId);
-      const importedSample: Sample = { ...stripSampleRemoteId(sample), id: newId, projectId: project.id, createdAt: now, updatedAt: now };
-      return { sample: importedSample, blob: sample.dataUrl ? await dataUrlToBlob(sample.dataUrl) : undefined };
+      const importedSample: Sample = { ...stripSampleRemoteFileId(sample), id: newId, projectId: project.id, createdAt: now, updatedAt: now };
+      return { sample: importedSample, blob: await dataUrlToBlob(sample.dataUrl) };
     })
   );
   const pads: Pad[] = parsed.pads.map((pad) => ({
@@ -56,31 +80,6 @@ export async function importProjectFile(file: File): Promise<Project> {
   return project;
 }
 
-function stripProjectRemoteId(project: Project): Omit<Project, "remoteId"> {
-  return {
-    id: project.id,
-    name: project.name,
-    bpm: project.bpm,
-    createdAt: project.createdAt,
-    updatedAt: project.updatedAt,
-    version: project.version
-  };
-}
-
-function stripSampleRemoteId(sample: Sample & { dataUrl?: string }): Omit<Sample, "remoteFileId"> {
-  return {
-    id: sample.id,
-    projectId: sample.projectId,
-    hash: sample.hash,
-    name: sample.name,
-    mimeType: sample.mimeType,
-    size: sample.size,
-    durationMs: sample.durationMs,
-    createdAt: sample.createdAt,
-    updatedAt: sample.updatedAt
-  };
-}
-
 export function parseExportedProject(text: string): ExportedProject {
   let parsed: unknown;
   try {
@@ -91,16 +90,20 @@ export function parseExportedProject(text: string): ExportedProject {
   if (!isRecord(parsed) || parsed.format !== "webmpc-project") {
     throw new Error("Unsupported project export format.");
   }
+  if (!isFiniteNumber(parsed.exportedAt) || parsed.exportedAt < 0) {
+    throw new Error("Project bundle is missing export metadata.");
+  }
   validateProjectBundlePayload({
     project: parsed.project,
     pads: parsed.pads,
     samples: parsed.samples,
-    midiMappings: parsed.midiMappings
+    midiMappings: parsed.midiMappings,
+    requireSampleDataUrl: true
   });
   return parsed as ExportedProject;
 }
 
-export function validateProjectBundlePayload(payload: { project: unknown; pads: unknown; samples: unknown; midiMappings?: unknown }): void {
+export function validateProjectBundlePayload(payload: { project: unknown; pads: unknown; samples: unknown; midiMappings?: unknown; requireSampleDataUrl?: boolean }): void {
   if (
     !isRecord(payload.project) ||
     typeof payload.project.id !== "string" ||
@@ -123,7 +126,7 @@ export function validateProjectBundlePayload(payload: { project: unknown; pads: 
   if (!payload.pads.every(isExportedPad)) {
     throw new Error("Project bundle contains invalid pad data.");
   }
-  if (!payload.samples.every(isExportedSample)) {
+  if (!payload.samples.every((sample) => isExportedSample(sample, Boolean(payload.requireSampleDataUrl)))) {
     throw new Error("Project bundle contains invalid sample data.");
   }
   if (!midiMappings.every(isExportedMidiMapping)) {
@@ -137,6 +140,10 @@ export function validateProjectBundlePayload(payload: { project: unknown; pads: 
   }
   if (!hasCompletePadSet(pads)) {
     throw new Error("Project bundle must contain one pad for each bank position.");
+  }
+  const midiNotes = pads.flatMap((pad) => (pad.midiNote === undefined ? [] : [pad.midiNote]));
+  if (new Set(midiNotes).size !== midiNotes.length) {
+    throw new Error("Project bundle contains duplicate MIDI note assignments.");
   }
   const sampleIds = new Set(samples.map((sample) => sample.id));
   if (pads.some((pad) => pad.sampleId !== undefined && !sampleIds.has(pad.sampleId))) {
@@ -176,36 +183,44 @@ function isExportedPad(value: unknown): boolean {
   );
 }
 
-function isExportedSample(value: unknown): boolean {
+function isExportedSample(value: unknown, requireDataUrl: boolean): boolean {
   return (
     isRecord(value) &&
     typeof value.id === "string" &&
     typeof value.projectId === "string" &&
     typeof value.hash === "string" &&
+    /^[a-f0-9]{64}$/i.test(value.hash) &&
     typeof value.name === "string" &&
     typeof value.mimeType === "string" &&
     isFiniteNumber(value.size) &&
-    value.size >= 0 &&
+    value.size > 0 &&
     (value.durationMs === undefined || (isFiniteNumber(value.durationMs) && value.durationMs >= 0)) &&
     isFiniteNumber(value.createdAt) &&
     value.createdAt >= 0 &&
     isFiniteNumber(value.updatedAt) &&
     value.updatedAt >= 0 &&
-    (value.dataUrl === undefined || (typeof value.dataUrl === "string" && isAudioDataUrl(value.dataUrl)))
+    (requireDataUrl ? typeof value.dataUrl === "string" && isAudioDataUrl(value.dataUrl) : value.dataUrl === undefined || (typeof value.dataUrl === "string" && isAudioDataUrl(value.dataUrl)))
   );
 }
 
 function isExportedMidiMapping(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    typeof value.name === "string" &&
-    isRecord(value.mappings) &&
-    Object.keys(value.mappings).every(isMidiNoteKey) &&
-    Object.values(value.mappings).every(isMidiMappingTarget) &&
-    isFiniteNumber(value.updatedAt) &&
-    value.updatedAt >= 0
-  );
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    !isRecord(value.mappings) ||
+    !Object.keys(value.mappings).every(isMidiNoteKey) ||
+    !Object.values(value.mappings).every(isMidiMappingTarget) ||
+    !isFiniteNumber(value.updatedAt) ||
+    value.updatedAt < 0
+  ) {
+    return false;
+  }
+  const targets = Object.values(value.mappings).map((target) => {
+    const mappingTarget = target as { bank: string; padIndex: number };
+    return `${mappingTarget.bank}:${mappingTarget.padIndex}`;
+  });
+  return new Set(targets).size === targets.length;
 }
 
 function isMidiMappingTarget(value: unknown): boolean {

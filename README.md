@@ -59,7 +59,7 @@ See [docs/pocketbase.md](docs/pocketbase.md) for concrete collection fields and 
 
 ## Import And Export
 
-Use the Import / Export panel to download a `.webmpc.json` project bundle. The export includes project metadata, pad mappings, sample metadata, MIDI mappings, and sample files as data URLs when available.
+Use the Import / Export panel to download a `.webmpc.json` project bundle. The export includes project metadata, pad mappings, sample metadata, MIDI mappings, and sample files as data URLs. If local sample file data is missing, export fails instead of writing an incomplete bundle.
 
 The project bundle path is covered by Vitest with fake IndexedDB so project creation, pad defaults, sample blob persistence, and export/import round trips are checked without a browser.
 
@@ -70,6 +70,8 @@ Build and run the frontend with PocketBase:
 ```bash
 docker compose up --build
 ```
+
+The frontend image uses the repository `bun.lock` with a pinned Bun version and fails the build if dependencies no longer match the lockfile.
 
 Frontend: `http://localhost:8080`
 
@@ -118,7 +120,7 @@ The app includes a PWA manifest and service worker setup through Vite PWA. The m
 
 ## Troubleshooting
 
-- No sound: click `Start Audio`, then re-import or reload samples if needed.
+- No sound: click `Start Audio`, confirm the pad has an assigned sample, and check the error banner for any sample load failure.
 - MIDI missing: use Windows Chrome, click `Enable MIDI`, and grant browser permission.
 - MPD218 pads mismatch: select a pad, click `MIDI Learn`, then hit the physical pad.
 - Sync unavailable: check `VITE_POCKETBASE_URL`, PocketBase auth, and collection names.

@@ -6,7 +6,7 @@ import { labelMidiMessage } from "../utils/midi";
 type MidiListener = (message: MidiMessage) => void;
 type MidiInputsListener = (inputs: MidiInput[]) => void;
 
-class MidiService {
+export class MidiService {
   private access?: MidiAccess;
   private listeners = new Set<MidiListener>();
   private inputListeners = new Set<MidiInputsListener>();
@@ -18,11 +18,17 @@ class MidiService {
   }
 
   async requestAccess(): Promise<MidiInput[]> {
-    const requestMIDIAccess = (navigator as unknown as MidiCapableNavigator).requestMIDIAccess;
+    const requestMIDIAccess =
+      typeof navigator === "undefined"
+        ? undefined
+        : (navigator as unknown as MidiCapableNavigator).requestMIDIAccess;
     if (!requestMIDIAccess) {
       throw new Error("Web MIDI is not available in this browser.");
     }
     const access = await requestMIDIAccess({ sysex: false });
+    if (this.access) {
+      this.access.onstatechange = null;
+    }
     this.access = access;
     this.enabled = true;
     this.refreshInputs();

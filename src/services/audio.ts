@@ -1,5 +1,6 @@
 import type { Pad, Sample } from "../types/models";
-import { getPlaybackWindow } from "../utils/playbackWindow";
+import { getPlaybackRate, getPlaybackWindow, getRenderedDurationSeconds } from "../utils/playbackWindow";
+import { formatSampleName } from "../utils/sampleLoadMessage";
 import { getSampleBlob, updateSampleDuration } from "./storage";
 
 type LoadedSample = {
@@ -19,6 +20,11 @@ export type AudioEngineState = {
   ready: boolean;
   usingWorklet: boolean;
   message: string;
+};
+
+export type LoadSamplesResult = {
+  loaded: number;
+  failed: string[];
 };
 
 class AudioEngine {
@@ -69,7 +75,7 @@ class AudioEngine {
     }
     const blob = await getSampleBlob(sample.id);
     if (!blob) {
-      throw new Error(`Missing local sample data for ${sample.name}.`);
+      throw new Error(`Missing local sample data for ${formatSampleName(sample.name)}.`);
     }
     const buffer = await this.context.decodeAudioData(await blob.arrayBuffer());
     this.samples.set(sample.id, { sample, buffer });
@@ -77,8 +83,22 @@ class AudioEngine {
     this.postSampleToWorklet(sample.id, sample.projectId, buffer);
   }
 
-  async loadProjectSamples(samples: Sample[]): Promise<void> {
-    await Promise.all(samples.map((sample) => this.loadSample(sample).catch(() => undefined)));
+  async loadProjectSamples(samples: Sample[]): Promise<LoadSamplesResult> {
+    if (!this.context) return { loaded: 0, failed: [] };
+    const results = await Promise.all(
+      samples.map(async (sample) => {
+        try {
+          await this.loadSample(sample);
+          return { sample, loaded: true };
+        } catch {
+          return { sample, loaded: false };
+        }
+      })
+    );
+    return {
+      loaded: results.filter((result) => result.loaded).length,
+      failed: results.filter((result) => !result.loaded).map(({ sample }) => sample.name)
+    };
   }
 
   unloadSample(sampleId: string): void {
@@ -151,8 +171,9 @@ class AudioEngine {
     const source = this.context.createBufferSource();
     const gain = this.context.createGain();
     const panner = this.context.createStereoPanner();
+    const playbackRate = getPlaybackRate(pad.pitch);
     source.buffer = loaded.buffer;
-    source.playbackRate.value = Math.pow(2, pad.pitch / 12);
+    source.playbackRate.value = playbackRate;
     gain.gain.value = Math.max(0, Math.min(1.5, pad.gain * velocity));
     panner.pan.value = Math.max(-1, Math.min(1, pad.pan));
 
@@ -162,7 +183,7 @@ class AudioEngine {
 
     const voice: FallbackVoice = { source, gain, sampleId: loaded.sample.id, projectId: loaded.sample.projectId, stopping: false };
     source.start(undefined, playbackWindow.startSeconds, playbackWindow.durationSeconds);
-    this.fadeGain(gain, playbackWindow.durationSeconds);
+    this.fadeGain(gain, getRenderedDurationSeconds(playbackWindow.durationSeconds, playbackRate));
     this.trackPadVoice(pad.id, voice);
     if (pad.chokeGroup) {
       const active = this.activeByChokeGroup.get(pad.chokeGroup) ?? [];

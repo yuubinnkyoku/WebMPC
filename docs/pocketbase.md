@@ -36,7 +36,7 @@ Recommended API rules:
 - Update: `@request.auth.id != ""`
 - Delete: disabled unless you explicitly want remote deletes
 
-The app stores project metadata, pad mappings, and sample metadata here. Local IndexedDB remains the playback source of truth.
+The app stores project metadata, pad mappings, and sample metadata here. Local IndexedDB remains the playback source of truth. The PocketBase record ID is tracked locally as sync metadata and is not written back into the nested `project` JSON.
 
 ### `webmpc_samples`
 
@@ -62,8 +62,11 @@ The app uploads one record per local sample. On sync, an existing `project + sam
 
 - existing local projects are not deleted
 - restored pads and samples receive new local IDs
+- restored samples do not keep stale remote file IDs from the remote project payload
 - downloaded sample files are saved into local IndexedDB
 - the restored project keeps the remote record ID for future sync
+
+If a remote project references sample metadata but the matching `webmpc_samples` file record is missing, empty, or cannot be downloaded, restore fails before creating the local project. Fix the remote sample file records and try again.
 
 ## Conflict Behavior
 

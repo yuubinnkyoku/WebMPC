@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { AudioEngineState } from "../services/audio";
 import type { Bank, MidiMessage } from "../types/models";
+import { prependMidiMessage } from "../utils/midiHistory";
 import { defaultUserSettings, normalizeMasterGain, normalizeUserSettings, type UserSettings } from "../utils/settings";
 
 type SyncViewState = {
@@ -57,7 +58,7 @@ export const useAppStore = create<AppState>()(
   setSelectedPadIndex: (index) => set({ selectedPadIndex: index }),
   setMidi: (enabled, inputs) => set({ midiEnabled: enabled, midiInputs: inputs }),
   pushMidiMessage: (message) =>
-    set((state) => ({ midiMessages: [message, ...state.midiMessages].slice(0, 30) })),
+    set((state) => ({ midiMessages: prependMidiMessage(state.midiMessages, message) })),
   setLearningPad: (pad) => set({ learningPad: pad }),
   setAudio: (audio) => set({ audio }),
   setSync: (sync) => set({ sync }),

@@ -2,6 +2,7 @@ import { downloadProject, importProjectFile } from "../services/exportImport";
 import { audioEngine } from "../services/audio";
 import { getSamples } from "../services/storage";
 import { useAppStore } from "../store/useAppStore";
+import { formatSampleLoadFailureMessage } from "../utils/sampleLoadMessage";
 import { useState } from "react";
 
 type Props = {
@@ -19,7 +20,8 @@ export function SettingsPanel({ projectId, onRefresh }: Props) {
     if (!file) return;
     try {
       const project = await importProjectFile(file);
-      await audioEngine.loadProjectSamples(await getSamples(project.id));
+      const result = await audioEngine.loadProjectSamples(await getSamples(project.id));
+      setError(formatSampleLoadFailureMessage("Imported project, but could not load", result.failed));
       await onRefresh(project.id);
       setToolStatus(`Imported ${project.name}`);
     } catch (error) {

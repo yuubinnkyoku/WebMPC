@@ -1,5 +1,6 @@
 import type { PointerEvent } from "react";
 import type { Pad, Sample } from "../types/models";
+import { formatPadAriaLabel, formatPadMidiLabel, formatPadSampleLabel } from "../utils/padLabel";
 
 type Props = {
   pad: Pad;
@@ -13,6 +14,9 @@ type Props = {
 };
 
 export function PadButton({ pad, sample, selected, active, shortcut, onSelect, onTrigger, onStop }: Props) {
+  const sampleName = formatPadSampleLabel(sample);
+  const midiLabel = formatPadMidiLabel(pad);
+
   function press(event: PointerEvent<HTMLButtonElement>) {
     if (typeof event.currentTarget.setPointerCapture === "function") {
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -35,6 +39,7 @@ export function PadButton({ pad, sample, selected, active, shortcut, onSelect, o
   return (
     <button
       type="button"
+      aria-label={formatPadAriaLabel(pad, sample, shortcut)}
       className={`pad ${selected ? "selected" : ""} ${active ? "active" : ""}`}
       onClick={(event) => {
         if (event.detail === 0) {
@@ -54,8 +59,8 @@ export function PadButton({ pad, sample, selected, active, shortcut, onSelect, o
         {pad.padIndex + 1}
         {shortcut ? <kbd>{shortcut}</kbd> : null}
       </span>
-      <span className="pad-name">{sample?.name ?? "Empty"}</span>
-      <span className="pad-note">{pad.midiNote !== undefined ? `MIDI ${pad.midiNote}` : "No MIDI"}</span>
+      <span className="pad-name">{sampleName}</span>
+      <span className="pad-note">{midiLabel}</span>
     </button>
   );
 }

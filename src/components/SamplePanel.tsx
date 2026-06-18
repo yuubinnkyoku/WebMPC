@@ -4,6 +4,7 @@ import { useAppStore } from "../store/useAppStore";
 import type { Pad, Sample } from "../types/models";
 import { formatBytes, formatDurationMs } from "../utils/format";
 import { parseOptionalNumberInput, parseRequiredNumberInput } from "../utils/numberInput";
+import { formatSampleName } from "../utils/sampleLoadMessage";
 
 type Props = {
   projectId: string;
@@ -20,13 +21,18 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
   const setError = useAppStore((state) => state.setError);
   const pad = pads.find((item) => item.bank === selectedBank && item.padIndex === selectedPadIndex);
   const assignedSample = samples.find((sample) => sample.id === pad?.sampleId);
+  const assignedSampleName = assignedSample ? formatSampleName(assignedSample.name) : undefined;
 
   async function handleFile(file?: File) {
     if (!file) return;
     try {
       const durationMs = await audioEngine.decodeDurationMs(file).catch(() => undefined);
       const sample = await importSample(projectId, file, durationMs);
-      await audioEngine.loadSample(sample).catch(() => undefined);
+      await audioEngine.loadSample(sample).catch(() => {
+        if (audioEngine.state.ready) {
+          setError(`Imported ${formatSampleName(sample.name)}, but it could not be loaded into the audio engine.`);
+        }
+      });
       if (pad) await savePad({ ...pad, sampleId: sample.id });
       await onRefresh(projectId);
     } catch (error) {
@@ -97,14 +103,14 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
         <select value={pad.sampleId ?? ""} onChange={(event) => void updatePad({ sampleId: event.target.value || undefined })}>
           <option value="">Empty</option>
           {samples.map((sample) => (
-            <option value={sample.id} key={sample.id}>{sample.name}</option>
+            <option value={sample.id} key={sample.id}>{formatSampleName(sample.name)}</option>
           ))}
         </select>
       </label>
       <button disabled={!pad.sampleId} onClick={() => void updatePad({ sampleId: undefined })}>Clear sample</button>
       {assignedSample ? (
         <div className="sample-meta">
-          <strong>{assignedSample.name}</strong>
+          <strong>{assignedSampleName}</strong>
           <span>{formatDurationMs(assignedSample.durationMs)} · {formatBytes(assignedSample.size)} · {assignedSample.mimeType || "unknown type"}</span>
           <button className="danger-button" onClick={() => void removeAssignedSample()}>Delete sample</button>
         </div>

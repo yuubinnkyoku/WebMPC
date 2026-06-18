@@ -6,3 +6,5 @@ dist
 .vite
 *.tsbuildinfo
 coverage
+*.log
+tmp-*

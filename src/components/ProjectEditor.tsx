@@ -5,6 +5,8 @@ import { getSyncState } from "../services/sync";
 import { useAppStore } from "../store/useAppStore";
 import type { Pad, Project, Sample } from "../types/models";
 import { parseRequiredNumberInput } from "../utils/numberInput";
+import { normalizeProjectName } from "../utils/projectName";
+import { formatSampleLoadFailureMessage } from "../utils/sampleLoadMessage";
 import { AudioSetupButton } from "./AudioSetupButton";
 import { MidiPanel } from "./MidiPanel";
 import { PadGrid } from "./PadGrid";
@@ -35,14 +37,16 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
   }, [project?.id, project?.name, project?.bpm]);
 
   async function loadSamples() {
-    await audioEngine.loadProjectSamples(samples);
+    const result = await audioEngine.loadProjectSamples(samples);
+    setError(formatSampleLoadFailureMessage("Unable to load", result.failed));
     if (project) await onRefresh(project.id);
   }
 
   async function saveProjectMetadata(updates: Partial<Pick<Project, "name" | "bpm">>) {
     if (!project) return;
-    const name = updates.name?.trim() || project.name;
+    const name = updates.name === undefined ? project.name : normalizeProjectName(updates.name);
     const bpm = updates.bpm === undefined ? project.bpm : Math.max(20, Math.min(300, updates.bpm));
+    if (updates.name !== undefined) setDraftName(name);
     if (name === project.name && bpm === project.bpm) return;
     try {
       await updateProject({
@@ -117,7 +121,7 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
       </div>
       <AudioSetupButton onReady={loadSamples} />
       <div className="workspace">
-        <PadGrid pads={pads} samples={samples} onPadChanged={onRefresh} />
+        <PadGrid pads={pads} samples={samples} />
         <div className="side">
           <SamplePanel projectId={project.id} pads={pads} samples={samples} onRefresh={onRefresh} />
           <MidiPanel projectId={project.id} pads={pads} onRefresh={onRefresh} />
