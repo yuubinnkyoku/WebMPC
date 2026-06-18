@@ -3,6 +3,12 @@ import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
+  server: {
+    allowedHosts: ["asus.tail4fb972.ts.net"]
+  },
+  preview: {
+    allowedHosts: ["asus.tail4fb972.ts.net"]
+  },
   plugins: [
     react(),
     VitePWA({
