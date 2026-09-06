@@ -67,6 +67,7 @@ export type SyncMetadata = {
 export type MidiMessage = {
   id: string;
   receivedAt: number;
+  inputId: string;
   inputName: string;
   status: number;
   command: number;

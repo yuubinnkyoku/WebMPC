@@ -4,6 +4,7 @@ import { midiService } from "../services/midi";
 import { applyMidiMapping, savePad } from "../services/storage";
 import { useAppStore } from "../store/useAppStore";
 import type { MidiMessage, Pad } from "../types/models";
+import { ActiveInputs } from "../utils/activeInputs";
 import { isNoteOff, isNoteOn, velocityToGain } from "../utils/midi";
 import { MidiMonitor } from "./MidiMonitor";
 
@@ -14,6 +15,7 @@ type Props = {
 };
 
 export function MidiPanel({ projectId, pads, onRefresh }: Props) {
+  const activeMidiPads = useRef(new ActiveInputs<Pad>());
   const padsRef = useRef(pads);
   const onRefreshRef = useRef(onRefresh);
   const learningPadRef = useRef(useAppStore.getState().learningPad);
@@ -28,28 +30,39 @@ export function MidiPanel({ projectId, pads, onRefresh }: Props) {
   const flashPad = useAppStore((state) => state.flashPad);
   const setError = useAppStore((state) => state.setError);
 
+  const releaseActiveMidiPads = useCallback(() => {
+    activeMidiPads.current.drain().forEach((pad) => audioEngine.stopPad(pad));
+  }, []);
+
   const handleMidi = useCallback(async (message: MidiMessage) => {
     pushMidiMessage(message);
+    const inputKey = `${message.inputId}:${message.channel}:${message.data1}`;
     if (isNoteOff(message.command, message.data2)) {
-      const pad = padsRef.current.find((item) => item.midiNote === message.data1);
-      if (pad && !pad.oneShot) {
-        audioEngine.stopPad(pad);
-      }
+      const pad = activeMidiPads.current.release(inputKey);
+      if (pad) audioEngine.stopPad(pad);
       return;
     }
     if (!isNoteOn(message.command, message.data2)) return;
     const learning = learningPadRef.current;
     if (learning) {
-      const learned = padsRef.current.find((pad) => pad.bank === learning.bank && pad.padIndex === learning.padIndex);
-      if (learned) {
-        await savePad({ ...learned, midiNote: message.data1 });
-        await onRefreshRef.current();
+      try {
+        const learned = padsRef.current.find((pad) => pad.bank === learning.bank && pad.padIndex === learning.padIndex);
+        if (learned) {
+          await savePad({ ...learned, midiNote: message.data1 });
+          await onRefreshRef.current();
+        }
+      } catch (error) {
+        setError(error instanceof Error ? error.message : "Unable to save MIDI Learn mapping.");
+      } finally {
+        setLearningPad(undefined);
       }
-      setLearningPad(undefined);
       return;
     }
     const pad = padsRef.current.find((item) => item.midiNote === message.data1);
     if (!pad) return;
+    const previous = activeMidiPads.current.release(inputKey);
+    if (previous) audioEngine.stopPad(previous);
+    if (!pad.oneShot) activeMidiPads.current.hold(inputKey, pad);
     try {
       flashPad(pad.bank, pad.padIndex);
       await audioEngine.playPad(pad, velocityToGain(message.data2));
@@ -73,9 +86,12 @@ export function MidiPanel({ projectId, pads, onRefresh }: Props) {
 
   useEffect(() => {
     return midiService.subscribeInputs((inputs) => {
+      releaseActiveMidiPads();
       setMidi(midiService.enabled, inputs.map((input) => input.name ?? input.id));
     });
-  }, [setMidi]);
+  }, [releaseActiveMidiPads, setMidi]);
+
+  useEffect(() => releaseActiveMidiPads, [projectId, releaseActiveMidiPads]);
 
   async function enable() {
     try {
@@ -89,7 +105,7 @@ export function MidiPanel({ projectId, pads, onRefresh }: Props) {
   async function applyDefaultMapping() {
     try {
       await applyMidiMapping(projectId);
-      await onRefresh(projectId);
+      await onRefresh();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to apply MIDI mapping.");
     }

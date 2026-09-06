@@ -4,13 +4,13 @@ WebMPC works without PocketBase. Configure PocketBase only when you want manual 
 
 ## Environment
 
-Set `VITE_POCKETBASE_URL` before building the frontend:
+Docker Compose defaults to the same-origin `/pb` endpoint, which nginx proxies to the PocketBase container. No URL override is needed for the normal Docker/Tailscale deployment:
 
 ```bash
-VITE_POCKETBASE_URL=https://your-tailnet-host:8090 docker compose up --build
+docker compose up --build
 ```
 
-For local development, use `.env.local`:
+For Vite local development outside Docker, use `.env.local`:
 
 ```bash
 VITE_POCKETBASE_URL=http://127.0.0.1:8090
@@ -20,13 +20,21 @@ VITE_POCKETBASE_URL=http://127.0.0.1:8090
 
 Create these collections in the PocketBase admin UI.
 
+### `users`
+
+Keep the default `users` Auth collection and leave password authentication enabled with `email` as an identity field. WebMPC signs in against this collection. Create each WebMPC user in this collection before they use the Sync panel.
+
 ### `webmpc_projects`
 
 Fields:
 
 - `project`: JSON, required
 - `pads`: JSON, required
-- `samples`: JSON, required
+- `samples`: JSON, not required so an empty sample list can be stored
+- `created`: Autodate, set on create
+- `updated`: Autodate, set on create and update
+
+Keep `updated` available because remote listing and conflict detection use it.
 
 Recommended API rules:
 
@@ -38,6 +46,8 @@ Recommended API rules:
 
 The app stores project metadata, pad mappings, and sample metadata here. Local IndexedDB remains the playback source of truth. The PocketBase record ID is tracked locally as sync metadata and is not written back into the nested `project` JSON.
 
+If a previously linked remote project record has been deleted, the next manual sync creates a replacement record and updates the local remote ID. Failures other than a confirmed not-found response stop the sync instead of creating a possible duplicate.
+
 ### `webmpc_samples`
 
 Fields:
@@ -45,6 +55,10 @@ Fields:
 - `project`: Text or Relation to `webmpc_projects`, required
 - `sampleId`: Text, required
 - `file`: File, required
+- `created`: Autodate, set on create
+- `updated`: Autodate, set on create and update
+
+Keep `updated` available because sample record lookup is sorted by it.
 
 Recommended API rules:
 
@@ -76,7 +90,7 @@ When `Sync now` sees that the remote project timestamp is newer than the current
 
 Use this checklist after PocketBase is running and the collections above exist.
 
-1. Build the frontend with `VITE_POCKETBASE_URL` pointing at PocketBase.
+1. Build the frontend with the default `/pb` endpoint, or set `VITE_POCKETBASE_URL` to a separate PocketBase HTTPS origin.
 2. Sign in from the WebMPC Sync panel.
 3. Create a local project, import a small sample, assign it to a pad, and click `Sync now`.
 4. Confirm PocketBase has one `webmpc_projects` record and at least one `webmpc_samples` record.
@@ -89,10 +103,10 @@ Use this checklist after PocketBase is running and the collections above exist.
 
 ## Tailscale
 
-Expose PocketBase and the frontend inside the Tailnet. Keep PocketBase private unless you intentionally publish it.
+Expose the Docker frontend inside the Tailnet. Its same-origin `/pb` route proxies PocketBase, so port `8090` does not need separate Tailnet exposure.
 
 ```bash
 tailscale serve --https=443 http://127.0.0.1:8080
 ```
 
-If PocketBase is served from another Tailnet host, rebuild the frontend with that HTTPS URL in `VITE_POCKETBASE_URL`.
+If PocketBase is served from another Tailnet host, rebuild the frontend with that host's HTTPS URL in `VITE_POCKETBASE_URL`.

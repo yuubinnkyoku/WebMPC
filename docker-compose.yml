@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        VITE_POCKETBASE_URL: ${VITE_POCKETBASE_URL:-http://127.0.0.1:8090}
+        VITE_POCKETBASE_URL: ${VITE_POCKETBASE_URL:-/pb}
     ports:
       - "8080:80"
     depends_on:
@@ -12,7 +12,7 @@ services:
   pocketbase:
     image: ghcr.io/muchobien/pocketbase:0.23.12
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     volumes:
       - pocketbase_data:/pb_data
 

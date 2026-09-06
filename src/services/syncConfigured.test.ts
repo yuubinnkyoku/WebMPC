@@ -111,6 +111,69 @@ describe("configured sync retries", () => {
     expect((await getSyncMetadata(project.id))?.lastSyncedAt).toBeTypeOf("number");
   });
 
+  it("preserves local project edits made while a remote project is being created", async () => {
+    let resolveCreate: ((record: { id: string; updated: string }) => void) | undefined;
+    pocketBaseMock.projectCreate.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        })
+    );
+    const { createProject, getProject, updateProject } = await import("./storage");
+    const { syncProject } = await import("./sync");
+    const project = await createProject("Edit during sync");
+
+    const syncPromise = syncProject(project.id);
+    await vi.waitFor(() => expect(pocketBaseMock.projectCreate).toHaveBeenCalledTimes(1));
+    await updateProject({ ...project, name: "Edited while syncing" });
+    resolveCreate?.({
+      id: "remote-project-1",
+      updated: "2026-06-18 00:00:00.000Z"
+    });
+
+    await expect(syncPromise).resolves.toMatchObject({ message: "Synced Edit during sync" });
+    await expect(getProject(project.id)).resolves.toMatchObject({
+      name: "Edited while syncing",
+      remoteId: "remote-project-1"
+    });
+  });
+
+  it("recreates a remote project when its stored remote id no longer exists", async () => {
+    const { createProject, db, getProject, getSyncMetadata } = await import("./storage");
+    const { syncProject } = await import("./sync");
+    const project = await createProject("Recreate remote");
+    await db.projects.update(project.id, { remoteId: "deleted-remote-project" });
+    pocketBaseMock.projectGetOne.mockRejectedValueOnce({ status: 404 });
+    pocketBaseMock.projectCreate.mockResolvedValueOnce({
+      id: "replacement-remote-project",
+      updated: "2026-06-18 00:00:02.000Z"
+    });
+
+    await expect(syncProject(project.id)).resolves.toMatchObject({ message: "Synced Recreate remote" });
+
+    expect(pocketBaseMock.projectUpdate).not.toHaveBeenCalled();
+    expect(pocketBaseMock.projectCreate).toHaveBeenCalledTimes(1);
+    await expect(getProject(project.id)).resolves.toMatchObject({ remoteId: "replacement-remote-project" });
+    await expect(getSyncMetadata(project.id)).resolves.toMatchObject({
+      remoteId: "replacement-remote-project",
+      lastSyncedAt: expect.any(Number)
+    });
+  });
+
+  it("does not create a duplicate when checking the remote project fails", async () => {
+    const { createProject, db, getProject } = await import("./storage");
+    const { syncProject } = await import("./sync");
+    const project = await createProject("Remote unavailable");
+    await db.projects.update(project.id, { remoteId: "existing-remote-project" });
+    pocketBaseMock.projectGetOne.mockRejectedValueOnce({ status: 503, message: "unavailable" });
+
+    await expect(syncProject(project.id)).rejects.toMatchObject({ status: 503 });
+
+    expect(pocketBaseMock.projectCreate).not.toHaveBeenCalled();
+    expect(pocketBaseMock.projectUpdate).not.toHaveBeenCalled();
+    await expect(getProject(project.id)).resolves.toMatchObject({ remoteId: "existing-remote-project" });
+  });
+
   it("reflects PocketBase sign-in and sign-out state", async () => {
     pocketBaseMock.isValid = false;
     const { getSyncState, signIn, signOut } = await import("./sync");

@@ -47,10 +47,18 @@ describe("MIDI service", () => {
     vi.stubGlobal("navigator", { requestMIDIAccess });
     const service = new MidiService();
     const inputUpdates: string[][] = [];
-    const messages: Array<{ command: number; channel: number; data1: number; data2: number; inputName: string; label: string }> = [];
+    const messages: Array<{
+      command: number;
+      channel: number;
+      data1: number;
+      data2: number;
+      inputId: string;
+      inputName: string;
+      label: string;
+    }> = [];
     service.subscribeInputs((inputs) => inputUpdates.push(inputs.map((item) => item.id)));
-    service.subscribe(({ command, channel, data1, data2, inputName, label }) =>
-      messages.push({ command, channel, data1, data2, inputName, label })
+    service.subscribe(({ command, channel, data1, data2, inputId, inputName, label }) =>
+      messages.push({ command, channel, data1, data2, inputId, inputName, label })
     );
 
     await expect(service.requestAccess()).resolves.toEqual([input]);
@@ -63,9 +71,9 @@ describe("MIDI service", () => {
     send(input, [0xb2, 1, 64]);
 
     expect(messages).toEqual([
-      { command: 0x90, channel: 2, data1: 36, data2: 100, inputName: "MPD218", label: "Note on 36 velocity 100" },
-      { command: 0x90, channel: 1, data1: 36, data2: 0, inputName: "MPD218", label: "Note off 36" },
-      { command: 0xb0, channel: 3, data1: 1, data2: 64, inputName: "MPD218", label: "CC 1 value 64" }
+      { command: 0x90, channel: 2, data1: 36, data2: 100, inputId: "input-1", inputName: "MPD218", label: "Note on 36 velocity 100" },
+      { command: 0x90, channel: 1, data1: 36, data2: 0, inputId: "input-1", inputName: "MPD218", label: "Note off 36" },
+      { command: 0xb0, channel: 3, data1: 1, data2: 64, inputId: "input-1", inputName: "MPD218", label: "CC 1 value 64" }
     ]);
   });
 

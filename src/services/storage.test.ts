@@ -29,6 +29,37 @@ async function resetDatabase(): Promise<void> {
   await db.open();
 }
 
+function createPcmWavFile(name: string): File {
+  const pcmSamples = [0, 12_000, 0, -12_000, 0, 8_000, 0, -8_000];
+  const dataLength = pcmSamples.length * 2;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+  const writeAscii = (offset: number, value: string) => {
+    Array.from(value).forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+  };
+  writeAscii(0, "RIFF");
+  view.setUint32(4, 36 + dataLength, true);
+  writeAscii(8, "WAVE");
+  writeAscii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 8_000, true);
+  view.setUint32(28, 16_000, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(36, "data");
+  view.setUint32(40, dataLength, true);
+  pcmSamples.forEach((sample, index) => view.setInt16(44 + index * 2, sample, true));
+  return new File([buffer], name, { type: "audio/wav" });
+}
+
+async function readWavMarkers(blob: Blob): Promise<{ riff: string; wave: string }> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const decode = (start: number, end: number) => String.fromCharCode(...bytes.slice(start, end));
+  return { riff: decode(0, 4), wave: decode(8, 12) };
+}
+
 describe("local storage and project bundles", () => {
   beforeEach(async () => {
     await resetDatabase();
@@ -46,19 +77,20 @@ describe("local storage and project bundles", () => {
 
   it("stores sample metadata and audio blobs outside Zustand state", async () => {
     const project = await createProject("Sample test");
-    const file = new File([new Uint8Array([1, 2, 3, 4])], "kick.wav", { type: "audio/wav" });
+    const file = createPcmWavFile("kick.wav");
     const sample = await importSample(project.id, file, 100);
     const samples = await getSamples(project.id);
     const blob = await getSampleBlob(sample.id);
 
     expect(samples).toHaveLength(1);
     expect(samples[0]?.name).toBe("kick.wav");
-    expect(blob?.size).toBe(4);
+    expect(blob?.size).toBe(file.size);
+    await expect(readWavMarkers(blob as Blob)).resolves.toEqual({ riff: "RIFF", wave: "WAVE" });
   });
 
   it("keeps project, pad assignment, and sample blob available after reopening IndexedDB", async () => {
     const project = await createProject("Reload test");
-    const file = new File([new Uint8Array([4, 3, 2, 1])], "reload.wav", { type: "audio/wav" });
+    const file = createPcmWavFile("reload.wav");
     const sample = await importSample(project.id, file, 150);
     const pads = await getPads(project.id);
     const targetPad = pads.find((pad) => pad.bank === "A" && pad.padIndex === 4);
@@ -76,7 +108,8 @@ describe("local storage and project bundles", () => {
 
     expect(reloadedProject?.name).toBe("Reload test");
     expect(reloadedSamples[0]?.name).toBe("reload.wav");
-    expect(reloadedBlob?.size).toBe(4);
+    expect(reloadedBlob?.size).toBe(file.size);
+    await expect(readWavMarkers(reloadedBlob as Blob)).resolves.toEqual({ riff: "RIFF", wave: "WAVE" });
     expect(reloadedPad?.sampleId).toBe(sample.id);
     expect(reloadedPad?.gain).toBe(0.8);
   });
@@ -646,7 +679,7 @@ describe("local storage and project bundles", () => {
     const project = await createProject("Bundle test");
     await ensureDefaultMapping();
     await db.projects.put({ ...project, remoteId: "remote_original" });
-    const file = new File([new Uint8Array([9, 8, 7, 6])], "snare.wav", { type: "audio/wav" });
+    const file = createPcmWavFile("snare.wav");
     const sample = await importSample(project.id, file, 250);
     await db.samples.put({ ...sample, remoteFileId: "remote_file_original" });
     const pads = await getPads(project.id);
@@ -682,7 +715,9 @@ describe("local storage and project bundles", () => {
     expect(importedPad?.sampleId).toBe(importedSamples[0]?.id);
     expect(importedPad?.gain).toBe(0.75);
     expect(importedPad?.pitch).toBe(2);
-    expect(importedBlob?.size).toBe(4);
+    expect(importedBlob?.size).toBe(file.size);
+    await expect(readWavMarkers(importedBlob as Blob)).resolves.toEqual({ riff: "RIFF", wave: "WAVE" });
+    await expect(sha256Blob(importedBlob as Blob)).resolves.toBe(sample.hash);
     expect(midiMappings.filter((mapping) => mapping.name === "MPD218 default")).toHaveLength(1);
   });
 

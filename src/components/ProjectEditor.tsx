@@ -1,4 +1,4 @@
-import { type KeyboardEvent, useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { audioEngine } from "../services/audio";
 import { updateProject } from "../services/storage";
 import { getSyncState } from "../services/sync";
@@ -24,8 +24,13 @@ type Props = {
 export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
   const setSync = useAppStore((state) => state.setSync);
   const setError = useAppStore((state) => state.setError);
+  const audioReady = useAppStore((state) => state.audio.ready);
   const [draftName, setDraftName] = useState("");
   const [draftBpm, setDraftBpm] = useState("120");
+  const samplesRef = useRef(samples);
+  const onRefreshRef = useRef(onRefresh);
+  samplesRef.current = samples;
+  onRefreshRef.current = onRefresh;
 
   useEffect(() => {
     setSync(getSyncState());
@@ -36,11 +41,26 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
     setDraftBpm(String(project?.bpm ?? 120));
   }, [project?.id, project?.name, project?.bpm]);
 
-  async function loadSamples() {
-    const result = await audioEngine.loadProjectSamples(samples);
-    setError(formatSampleLoadFailureMessage("Unable to load", result.failed));
-    if (project) await onRefresh(project.id);
-  }
+  useEffect(() => {
+    const projectId = project?.id;
+    if (!projectId) {
+      audioEngine.deactivateProject();
+      return;
+    }
+    let cancelled = false;
+    void audioEngine.activateProject(projectId, audioReady ? samplesRef.current : []).then(async (result) => {
+      if (cancelled || !audioReady) return;
+      setError(formatSampleLoadFailureMessage("Unable to load", result.failed));
+      await onRefreshRef.current();
+    }).catch((error: unknown) => {
+      if (!cancelled) setError(error instanceof Error ? error.message : "Unable to load project audio.");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [audioReady, project?.id, setError]);
+
+  useEffect(() => () => audioEngine.deactivateProject(), []);
 
   async function saveProjectMetadata(updates: Partial<Pick<Project, "name" | "bpm">>) {
     if (!project) return;
@@ -119,7 +139,7 @@ export function ProjectEditor({ project, pads, samples, onRefresh }: Props) {
           </label>
         </div>
       </div>
-      <AudioSetupButton onReady={loadSamples} />
+      <AudioSetupButton />
       <div className="workspace">
         <PadGrid pads={pads} samples={samples} />
         <div className="side">

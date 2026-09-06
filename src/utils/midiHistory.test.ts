@@ -6,6 +6,7 @@ function message(id: string): MidiMessage {
   return {
     id,
     receivedAt: 1,
+    inputId: "input-id",
     inputName: "input",
     status: 0x90,
     command: 0x90,

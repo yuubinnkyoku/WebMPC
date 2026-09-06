@@ -70,27 +70,28 @@ export async function syncProject(projectId: string): Promise<SyncState> {
   const samples = await getSamples(projectId);
   const sampleBlobs = await getRequiredSampleBlobs(samples, "Unable to upload missing sample file data for");
   const payload = toRemoteSyncPayload(project, pads, samples);
-  const remoteId = project.remoteId;
+  let remoteId = project.remoteId;
   if (remoteId) {
-    const remote = await pb.collection<RemoteProjectRecord>("webmpc_projects").getOne(remoteId).catch(() => undefined);
-    const remoteUpdatedAt = getRemoteProjectUpdatedAt(remote?.project?.updatedAt, remote?.updated);
-    const conflict = decideSyncConflict(project.updatedAt, remoteUpdatedAt);
-    if (conflict.remoteIsNewer) {
-      await saveSyncMetadata({
-        projectId,
-        remoteId,
-        remoteUpdatedAt
-      });
-      return { ...getSyncState(), message: conflict.message ?? "Remote project is newer." };
+    const remote = await getRemoteProject(remoteId);
+    if (!remote) {
+      remoteId = undefined;
+    } else {
+      const remoteUpdatedAt = getRemoteProjectUpdatedAt(remote.project?.updatedAt, remote.updated);
+      const conflict = decideSyncConflict(project.updatedAt, remoteUpdatedAt);
+      if (conflict.remoteIsNewer) {
+        await saveSyncMetadata({
+          projectId,
+          remoteId,
+          remoteUpdatedAt
+        });
+        return { ...getSyncState(), message: conflict.message ?? "Remote project is newer." };
+      }
     }
   }
   const record = remoteId
     ? await pb.collection("webmpc_projects").update(remoteId, payload)
     : await pb.collection("webmpc_projects").create(payload);
-  const projectWithRemoteId = assignRemoteProjectId(project, record.id);
-  if (projectWithRemoteId) {
-    await db.projects.put(projectWithRemoteId);
-  }
+  await persistRemoteProjectId(projectId, record.id);
   await uploadSampleFiles(record.id, samples, sampleBlobs);
   await pruneRemoteSampleFiles(record.id, samples);
   const syncedAt = Date.now();
@@ -101,6 +102,20 @@ export async function syncProject(projectId: string): Promise<SyncState> {
     remoteUpdatedAt: parsePocketBaseUpdatedAt(record.updated)
   });
   return { ...getSyncState(), message: `Synced ${project.name}` };
+}
+
+async function getRemoteProject(remoteId: string): Promise<RemoteProjectRecord | undefined> {
+  if (!pb) return undefined;
+  try {
+    return await pb.collection<RemoteProjectRecord>("webmpc_projects").getOne(remoteId);
+  } catch (error) {
+    if (isNotFoundResponse(error)) return undefined;
+    throw error;
+  }
+}
+
+function isNotFoundResponse(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "status" in error && error.status === 404;
 }
 
 export async function listRemoteProjects(): Promise<RemoteProjectSummary[]> {
@@ -247,6 +262,11 @@ export function toRemoteSyncPayload(project: Project, pads: Pad[], samples: Samp
 
 export function assignRemoteProjectId(project: Project, remoteId: string): Project | undefined {
   return project.remoteId === remoteId ? undefined : { ...project, remoteId };
+}
+
+async function persistRemoteProjectId(projectId: string, remoteId: string): Promise<void> {
+  const updated = await db.projects.update(projectId, { remoteId });
+  if (updated === 0) throw new Error("Project not found.");
 }
 
 export function toRestoredProjectBundle(

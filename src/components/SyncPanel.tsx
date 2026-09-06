@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { audioEngine } from "../services/audio";
-import { getSamples, getSyncMetadata } from "../services/storage";
+import { getSyncMetadata } from "../services/storage";
 import { getSyncState, listRemoteProjects, restoreRemoteProject, signIn, signOut, syncProject, type RemoteProjectSummary } from "../services/sync";
 import { useAppStore } from "../store/useAppStore";
 import { formatTimestamp } from "../utils/format";
-import { formatSampleLoadFailureMessage } from "../utils/sampleLoadMessage";
 
 type Props = {
   projectId?: string;
@@ -47,7 +45,7 @@ export function SyncPanel({ projectId, onRefresh }: Props) {
       setSync({ ...getSyncState(), syncing: true, message: "Syncing..." });
       setSync(await syncProject(projectId));
       await refreshLastSyncedAt(projectId);
-      await onRefresh(projectId);
+      await onRefresh();
     } catch (error) {
       setSync({ ...getSyncState(), message: "Sync failed" });
       setError(error instanceof Error ? error.message : "Unable to sync.");
@@ -70,8 +68,6 @@ export function SyncPanel({ projectId, onRefresh }: Props) {
     try {
       setSync({ ...getSyncState(), syncing: true, message: "Restoring project..." });
       const project = await restoreRemoteProject(remoteId);
-      const result = await audioEngine.loadProjectSamples(await getSamples(project.id));
-      setError(formatSampleLoadFailureMessage("Restored project, but could not load", result.failed));
       await onRefresh(project.id);
       await refreshLastSyncedAt(project.id);
       setSync({ ...getSyncState(), message: `Restored ${project.name}` });

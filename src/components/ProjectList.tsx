@@ -27,7 +27,11 @@ export function ProjectList({ projects, onRefresh }: Props) {
   }
 
   async function select(project: Project) {
-    await onRefresh(project.id);
+    try {
+      await onRefresh(project.id);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Unable to open project.");
+    }
   }
 
   async function remove(project: Project) {

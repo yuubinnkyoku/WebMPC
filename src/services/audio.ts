@@ -27,9 +27,10 @@ export type LoadSamplesResult = {
   failed: string[];
 };
 
-class AudioEngine {
+export class AudioEngine {
   private context?: AudioContext;
   private samples = new Map<string, LoadedSample>();
+  private activeProjectId?: string;
   private activeByChokeGroup = new Map<string, FallbackVoice[]>();
   private activeByPad = new Map<string, FallbackVoice[]>();
   private master?: GainNode;
@@ -78,8 +79,9 @@ class AudioEngine {
       throw new Error(`Missing local sample data for ${formatSampleName(sample.name)}.`);
     }
     const buffer = await this.context.decodeAudioData(await blob.arrayBuffer());
-    this.samples.set(sample.id, { sample, buffer });
     await updateSampleDuration(sample.id, Math.round(buffer.duration * 1000));
+    if (this.activeProjectId !== sample.projectId) return;
+    this.samples.set(sample.id, { sample, buffer });
     this.postSampleToWorklet(sample.id, sample.projectId, buffer);
   }
 
@@ -101,6 +103,23 @@ class AudioEngine {
     };
   }
 
+  async activateProject(projectId: string, samples: Sample[]): Promise<LoadSamplesResult> {
+    if (this.activeProjectId !== projectId) {
+      const previousProjectId = this.activeProjectId;
+      this.activeProjectId = projectId;
+      if (previousProjectId) this.unloadProject(previousProjectId);
+    }
+    const result = await this.loadProjectSamples(samples);
+    if (this.activeProjectId !== projectId) this.unloadProject(projectId);
+    return result;
+  }
+
+  deactivateProject(): void {
+    const projectId = this.activeProjectId;
+    this.activeProjectId = undefined;
+    if (projectId) this.unloadProject(projectId);
+  }
+
   unloadSample(sampleId: string): void {
     this.samples.delete(sampleId);
     this.stopMatchingFallbackVoices((voice) => voice.sampleId === sampleId);
@@ -110,6 +129,7 @@ class AudioEngine {
   }
 
   unloadProject(projectId: string): void {
+    if (this.activeProjectId === projectId) this.activeProjectId = undefined;
     for (const [sampleId, loaded] of this.samples.entries()) {
       if (loaded.sample.projectId === projectId) {
         this.samples.delete(sampleId);

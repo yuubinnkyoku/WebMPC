@@ -1,11 +1,7 @@
 import { audioEngine } from "../services/audio";
 import { useAppStore } from "../store/useAppStore";
 
-type Props = {
-  onReady: () => Promise<void>;
-};
-
-export function AudioSetupButton({ onReady }: Props) {
+export function AudioSetupButton() {
   const audio = useAppStore((state) => state.audio);
   const masterGain = useAppStore((state) => state.settings.masterGain);
   const setAudio = useAppStore((state) => state.setAudio);
@@ -17,7 +13,6 @@ export function AudioSetupButton({ onReady }: Props) {
       const state = await audioEngine.start();
       audioEngine.setMasterGain(masterGain);
       setAudio(state);
-      await onReady();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to start audio.");
     }

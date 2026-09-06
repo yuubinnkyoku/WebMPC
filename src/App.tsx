@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProjectEditor } from "./components/ProjectEditor";
 import { ProjectList } from "./components/ProjectList";
 import { ensureDefaultMapping, getPads, getProject, getSamples, listProjects } from "./services/storage";
 import { useAppStore } from "./store/useAppStore";
 import type { Pad, Project, Sample } from "./types/models";
-import { chooseProjectId } from "./utils/projectSelection";
+import { ProjectRefreshCoordinator } from "./utils/projectSelection";
 
 export default function App() {
   const currentProjectId = useAppStore((state) => state.currentProjectId);
@@ -15,27 +15,37 @@ export default function App() {
   const [pads, setPads] = useState<Pad[]>([]);
   const [samples, setSamples] = useState<Sample[]>([]);
   const [loading, setLoading] = useState(true);
+  const refreshCoordinator = useRef(new ProjectRefreshCoordinator());
 
   const currentProject = useMemo(() => projects.find((project) => project.id === currentProjectId), [currentProjectId, projects]);
 
   const refresh = useCallback(async (preferredProjectId?: string) => {
+    const request = refreshCoordinator.current.begin(preferredProjectId);
     const nextProjects = await listProjects();
-    setProjects(nextProjects);
     const storeProjectId = useAppStore.getState().currentProjectId;
-    const selectedId = chooseProjectId(nextProjects.map((project) => project.id), preferredProjectId, storeProjectId);
-    if (selectedId !== storeProjectId) setCurrentProjectId(selectedId);
+    const selectedId = refreshCoordinator.current.choose(nextProjects.map((project) => project.id), storeProjectId);
     if (selectedId) {
       const [project, nextPads, nextSamples] = await Promise.all([getProject(selectedId), getPads(selectedId), getSamples(selectedId)]);
+      if (!refreshCoordinator.current.isCurrent(request)) return;
       if (!project) {
+        refreshCoordinator.current.commit();
+        setProjects(nextProjects.filter((candidate) => candidate.id !== selectedId));
         setCurrentProjectId(undefined);
         setPads([]);
         setSamples([]);
         setLoading(false);
         return;
       }
+      refreshCoordinator.current.commit(selectedId);
+      setProjects(nextProjects);
+      if (selectedId !== storeProjectId) setCurrentProjectId(selectedId);
       setPads(nextPads);
       setSamples(nextSamples);
     } else {
+      if (!refreshCoordinator.current.isCurrent(request)) return;
+      refreshCoordinator.current.commit();
+      setProjects(nextProjects);
+      if (storeProjectId !== undefined) setCurrentProjectId(undefined);
       setPads([]);
       setSamples([]);
     }

@@ -43,13 +43,13 @@ Dexie stores projects, pads, sample metadata, sample blobs, MIDI mappings, and s
 
 ## PocketBase Sync
 
-PocketBase is optional. Set:
+PocketBase is optional. For Vite local development, set this in `.env.local`:
 
 ```bash
 VITE_POCKETBASE_URL=http://127.0.0.1:8090
 ```
 
-The app remains usable when PocketBase is not configured or unavailable. Manual sync sends project metadata, pad mappings, sample metadata, and sample files to PocketBase collections named `webmpc_projects` and `webmpc_samples`. Sync also attempts to prune remote sample-file records that no longer exist locally when the PocketBase Delete rule allows it. `Load remote` lists synced projects and `Restore` imports a remote project as a new local project without deleting existing local data. Local IndexedDB remains the playback source of truth.
+The app remains usable when PocketBase is not configured or unavailable. Manual sync sends project metadata, pad mappings, sample metadata, and sample files to PocketBase collections named `webmpc_projects` and `webmpc_samples`. Sync also attempts to prune remote sample-file records that no longer exist locally when the PocketBase Delete rule allows it. `Load remote` lists synced projects and `Restore` imports a remote project as a new local project without deleting existing local data. Local IndexedDB remains the playback source of truth. Docker Compose builds the frontend with the same-origin `/pb` endpoint and nginx proxies it to the PocketBase container, avoiding client-local `127.0.0.1` URLs and HTTPS mixed content on Tailnet devices.
 
 Successful sync and restore operations update local sync metadata with the remote record ID, last synced time, and remote updated timestamp.
 
@@ -77,16 +77,19 @@ Frontend: `http://localhost:8080`
 
 PocketBase: `http://localhost:8090`
 
-To point the built frontend at a different PocketBase URL, set the build argument before composing:
+The default Docker build uses nginx's same-origin `/pb` proxy. To use a separate PocketBase host instead, set an absolute build-time URL before composing:
 
 ```bash
-VITE_POCKETBASE_URL=https://your-tailnet-host:8090 docker compose up --build
+VITE_POCKETBASE_URL=https://pocketbase.example.ts.net docker compose up --build
 ```
 
 Create the PocketBase collections before syncing:
 
-- `webmpc_projects`: JSON-capable fields for `project`, `pads`, and `samples`.
-- `webmpc_samples`: relation or text field for `project`, text field for `sampleId`, and file field for `file`.
+- `users`: the default Auth collection with email/password authentication enabled.
+- `webmpc_projects`: JSON fields for required `project` and `pads`, optional `samples`, plus automatic `created` and `updated` timestamps.
+- `webmpc_samples`: relation or text field for `project`, text field for `sampleId`, file field for `file`, plus automatic `created` and `updated` timestamps.
+
+The `samples` JSON field must accept an empty array so a new project can sync before audio is imported. Both sync collections need `updated` because WebMPC sorts remote records by that field. See [docs/pocketbase.md](docs/pocketbase.md) for API rules.
 
 ## Tailscale Serve HTTPS
 
@@ -96,7 +99,7 @@ On the machine running Docker Compose, expose the frontend privately:
 tailscale serve --https=443 http://127.0.0.1:8080
 ```
 
-Use the HTTPS Tailnet URL in Chrome. HTTPS is important for reliable browser permission behavior around MIDI and PWA features.
+This single HTTPS origin serves WebMPC and the proxied PocketBase API under `/pb`. Port `8090` can remain host-local except when direct PocketBase administration is needed. Use the HTTPS Tailnet URL in Chrome; HTTPS is important for reliable browser permission behavior around MIDI and PWA features.
 
 ## Proxmox LXC Notes
 

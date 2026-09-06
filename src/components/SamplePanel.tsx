@@ -34,7 +34,7 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
         }
       });
       if (pad) await savePad({ ...pad, sampleId: sample.id });
-      await onRefresh(projectId);
+      await onRefresh();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to import sample.");
     }
@@ -44,7 +44,7 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
     if (!pad) return;
     try {
       await savePad({ ...pad, ...updates });
-      await onRefresh(projectId);
+      await onRefresh();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to update pad.");
     }
@@ -55,7 +55,7 @@ export function SamplePanel({ projectId, pads, samples, onRefresh }: Props) {
     try {
       audioEngine.unloadSample(assignedSample.id);
       await deleteSample(assignedSample.id);
-      await onRefresh(projectId);
+      await onRefresh();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to delete sample.");
     }

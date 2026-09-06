@@ -19,11 +19,12 @@ Current automated test coverage includes:
 - MIDI message classification and monitor labels
 - Web MIDI support detection, non-sysex access requests, input refresh, note-on/note-off/control-change event conversion, and old-access detachment on reconnect
 - MIDI monitor history ordering and capped history size
+- active input tracker release, remap, and drain semantics used by held keyboard and MIDI pads
 - pad bank order, visible pad sorting, keyboard shortcut mapping, form-field shortcut suppression, and accessibility labels for bank, sample, MIDI, and shortcut states
 - project creation with four banks and MPD218 default notes/mapping
 - project name normalization for local edits and imported bundles
 - project metadata updates based on the stored version, stale-caller version progression, immutable/sync-owned field preservation, and no-op project save detection
-- sample metadata and blob persistence in fake IndexedDB
+- valid PCM WAV metadata and blob persistence in fake IndexedDB, including RIFF/WAVE markers after reopening
 - missing-parent project, pad, sample, and sync-metadata update rejection; immutable pad position enforcement; cross-project sample assignment rejection; replacement-bundle pad/sample/MIDI mapping validation; cross-project/cross-mapping ID ownership protection; sample Blob size and SHA-256 content matching; and transactional rollback of failed project-bundle replacement writes
 - project, pad assignment, and sample blob persistence after reopening IndexedDB
 - project deletion and sample deletion cleanup paths
@@ -32,11 +33,12 @@ Current automated test coverage includes:
 - project-wide MIDI note uniqueness across manual edits, MIDI Learn saves, preset application, imported bundles, and remote restores
 - MIDI mapping normalization, unique names, no-op saves, valid note/target ranges, one-note-per-target enforcement, and missing-project application rejection
 - decoded sample duration metadata updates and invalid duration fallback
-- playback trim windows, pitch-to-playback-rate conversion, and pitch-adjusted fallback playback duration
+- playback trim windows, pitch-to-playback-rate conversion, pitch-adjusted fallback playback duration, and AudioBufferSource playback when AudioWorklet is unavailable
+- active audio project switching, previous-project unload, explicit deactivation, and stale asynchronous project-load/direct-import cleanup
 - AudioWorklet sample rendering, pan/gain, pitch-independent stop release timing, choke groups, and sample/project unload release paths
 - sync metadata persistence and invalid timestamp normalization
 - stale sync metadata cleanup when a project bundle is replaced
-- project export/import round trips with sample data, local sync ID stripping, and rejection of missing sample file data
+- project export/import round trips with valid PCM WAV data, RIFF/WAVE marker and SHA-256 preservation, local sync ID stripping, and rejection of missing sample file data
 - project export filename formatting, including Unicode project names
 - malformed project bundle rejection, including missing export metadata, invalid SHA-256 metadata, missing/empty/invalid sample data, broken pad references, and cross-project bundle data
 - Data URL conversion and strict non-empty audio base64 Data URL validation
@@ -50,11 +52,22 @@ Current automated test coverage includes:
 - remote project summary normalization, including missing names, unknown or malformed project timestamps, and sample counts
 - sync conflict timestamp decisions
 - PocketBase unconfigured behavior for sync, sign-in, remote list, restore paths, remote payload stripping, post-sync remote ID assignment without local edit timestamp/version churn, and restored remote bundle ID remapping
-- configured PocketBase sign-in/sign-out state and failed sample-upload retry behavior without duplicate remote project creation or false last-synced timestamps
-- remote sample prune decisions, duplicate remote sample-file selection, and missing local blob detection; live PocketBase checks should also confirm all remote sample file records are considered, not only the first page
+- configured PocketBase sign-in/sign-out state, preservation of local project edits made while remote creation is in flight, deleted-remote recreation without treating transient lookup failures as missing records, and failed sample-upload retry behavior without duplicate remote project creation or false last-synced timestamps
+- remote sample prune decisions, duplicate remote sample-file selection, and missing local blob detection
 - project selection fallback behavior
+- latest-project refresh ordering so delayed saves or sync completion cannot replace a newer selection with stale project data
 
 The Docker frontend build is pinned to Bun 1.3.14, requires the committed `bun.lock`, and excludes local dependencies, build output, Git history, environment files, coverage, and logs from the build context.
+
+On 2026-07-15, Docker Desktop 4.82.0 built the frontend image from the frozen lockfile and started both Compose services. The frontend root, SPA fallback, manifest, service worker, and AudioWorklet returned HTTP 200. The same-origin `/pb/api/health` proxy returned PocketBase HTTP 200, the built JavaScript contained the `/pb` base URL, the manifest used `application/manifest+json`, the service worker used `Cache-Control: no-cache`, and PocketBase port 8090 was bound to host loopback only. A browser-created project showed 16 pads and `PocketBase configured` without console errors. A temporary marker in the named `webmpc_pocketbase_data` volume survived a PocketBase restart and Compose shutdown, then was removed successfully.
+
+Also on 2026-07-15, an isolated PocketBase 0.23.12 environment verified email/password sign-in, empty-project sync, `Load remote`, and restore-as-new through the Docker frontend. PocketBase contained one remote project with 64 pads, zero samples, and no leaked local `remoteId`; the browser retained the original project and created a separate `Live sync smoke restored` project. This check also confirmed that `webmpc_projects.samples` must allow an empty array and both sync collections must provide the `updated` Autodate field used by remote sorting.
+
+On 2026-07-16, an isolated PocketBase 0.23.12 environment contained 501 authenticated `webmpc_projects` records. The WebMPC Sync panel reported `Loaded 501 remote projects`, rendered 501 restore controls, and included both `Pagination 001` and `Pagination 501` with no visible or console errors. This verifies that the live remote-project list crosses the PocketBase SDK's 500-record request page instead of stopping at the first page. The temporary account, records, container, and volume were removed afterward.
+
+Also on 2026-07-16, a separate isolated PocketBase project contained one valid 64-pad project with 501 sample metadata entries and 501 matching PCM WAV file records. PocketBase reported two `webmpc_samples` pages (500 + 1). WebMPC restored the project with 502 Assigned sample options including `Empty`, `sample-001.wav`, and `sample-501.wav`; after a full page reload the same 502 options remained in local IndexedDB with no visible or console errors. The restored local project and all temporary remote resources were deleted afterward. This verifies pagination of remote sample-file lookup as well as multi-page restore persistence.
+
+Also on 2026-07-16, an isolated PocketBase environment verified live conflict and deleted-remote recovery behavior. Initial sync created one remote project with 64 pads and zero samples. After its embedded project timestamp was moved into the future, `Sync now` displayed the remote-newer conflict message and left both the remote record ID and future timestamp unchanged. After that remote record was deleted, another sync replaced the stale local remote ID with a newly created record containing the same project data. The browser reported no console errors, and the temporary local project, account, container, and volume were removed afterward.
 
 ## Browser Smoke Check
 
@@ -75,6 +88,14 @@ On 2026-06-18, a browser flow created a new project, initialized audio, changed 
 
 Also on 2026-06-18, the production build was served with `bun run preview` on `http://localhost:4173/`. The app, manifest, service worker, and `sample-worklet.js` returned HTTP 200. After one controlled reload, the preview server was stopped; the app shell still rendered without console errors and a separate request for `sample-worklet.js` returned the cached AudioWorklet source, confirming both are available from the generated service worker precache.
 
+On 2026-07-15, the production preview restored a local project, displayed all 16 pads and major panels, switched from bank A to bank B, and showed B1-B16 without a visible error or console error. At 390 x 844 it retained 16 pads with no invalid date, overflowing buttons, or document-level horizontal overflow.
+
+Also on 2026-07-15, a production-preview lifecycle check started audio, created a second project, switched to it immediately, waited for the original project's asynchronous audio load to settle, and confirmed the second project remained selected with 16 pads and no console error. Switching back also retained 16 pads without a visible error; the temporary project was then deleted.
+
+On 2026-07-16, a development-server check started audio, created two temporary projects, and selected A then B without waiting between clicks. The latest B selection remained active with 16 bank-A pads, no visible error, and no console error. Both temporary projects were removed afterward while the pre-existing local project remained intact.
+
+Also on 2026-07-16, the current development build restored the existing local project, rendered 16 pads and all major panels, and switched to bank B with B1-B16 intact. Desktop and 390 x 844 checks had no visible error, no `Invalid Date`, no console error, no document-level horizontal overflow, and no overflowing visible buttons. The automated browser accepted the audio-start gesture but kept its AudioContext in the browser-resume state, so audible playback remains a manual hardware/browser check.
+
 ## Manual Hardware Checks
 
 These require Windows Chrome, speakers or headphones, and an MPD218 or another USB MIDI controller.
@@ -89,13 +110,14 @@ These require Windows Chrome, speakers or headphones, and an MPD218 or another U
 8. Confirm playback changes accordingly.
 9. Trigger a long sample or gated pad, click `Stop all`, and confirm playback stops.
 10. Turn off `One-shot`, hold the on-screen pad or its keyboard shortcut, then release and confirm playback stops.
-11. Click `Enable MIDI` and grant browser permission.
-12. Hit the physical pad mapped to MIDI note 36.
-13. Confirm the MIDI monitor shows the note and the assigned sample plays.
-14. Turn off `One-shot` for the assigned pad, hold the physical pad, then release it and confirm MIDI note-off stops playback.
-15. Change a pad MIDI note, click `Apply MPD218`, and confirm bank A notes return to 36-51.
-16. Use `MIDI Learn` on another pad, hit a physical pad, and confirm the mapping changes.
-17. Use `Clear MIDI` and confirm the physical pad no longer triggers that WebMPC pad.
+11. While holding a gated keyboard pad, switch banks or move focus away from the browser and confirm the original pad stops instead of remaining audible.
+12. Click `Enable MIDI` and grant browser permission.
+13. Hit the physical pad mapped to MIDI note 36.
+14. Confirm the MIDI monitor shows the note and the assigned sample plays.
+15. Turn off `One-shot` for the assigned pad, hold the physical pad, then release it and confirm MIDI note-off stops playback.
+16. Change a pad MIDI note, click `Apply MPD218`, and confirm bank A notes return to 36-51.
+17. Use `MIDI Learn` on another pad, hit a physical pad, and confirm the mapping changes.
+18. Use `Clear MIDI` and confirm the physical pad no longer triggers that WebMPC pad.
 
 ## Persistence Checks
 
@@ -107,6 +129,7 @@ These require Windows Chrome, speakers or headphones, and an MPD218 or another U
 6. Confirm the sample can be played again from the on-screen pad.
 7. Change master gain, reload the page, and confirm the setting remains.
 8. Delete the local project and confirm it disappears from the project list after confirmation.
+9. With audio already started, switch between two projects that have assigned samples and confirm the new project's pads play without restarting audio while the previous project's gated voices stop.
 
 ## Import / Export Checks
 

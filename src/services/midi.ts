@@ -63,11 +63,13 @@ export class MidiService {
     const [status = 0, data1 = 0, data2 = 0] = Array.from(event.data);
     const command = status & 0xf0;
     const channel = (status & 0x0f) + 1;
+    const inputId = event.currentTarget?.id ?? "midi-input";
     const inputName = event.currentTarget?.name ?? "MIDI input";
     const label = labelMidiMessage(command, data1, data2);
     const message: MidiMessage = {
       id: makeId("midi"),
       receivedAt: Date.now(),
+      inputId,
       inputName,
       status,
       command,
