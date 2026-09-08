@@ -39,6 +39,24 @@ describe("MIDI service", () => {
     expect(service.isSupported()).toBe(false);
     await expect(service.requestAccess()).rejects.toThrow("Web MIDI is not available in this browser.");
   });
+  it("calls requestMIDIAccess with the navigator as receiver", async () => {
+    const input = createInput("input-1", "MPD218");
+    const access = createAccess([input]);
+    const navigatorStub: Record<string, unknown> = {};
+    navigatorStub.requestMIDIAccess = async function (this: unknown): Promise<MidiAccess> {
+      if (this !== navigatorStub) {
+        throw new TypeError(
+          "'requestMIDIAccess' called on an object that does not implement interface Navigator.",
+        );
+      }
+      return access;
+    };
+    vi.stubGlobal("navigator", navigatorStub);
+    const service = new MidiService();
+
+    await expect(service.requestAccess()).resolves.toEqual([input]);
+  });
+
 
   it("requests non-sysex access, lists inputs, and emits parsed MIDI messages", async () => {
     const input = createInput("input-1", "MPD218");

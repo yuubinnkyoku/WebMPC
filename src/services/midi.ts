@@ -18,14 +18,14 @@ export class MidiService {
   }
 
   async requestAccess(): Promise<MidiInput[]> {
-    const requestMIDIAccess =
-      typeof navigator === "undefined"
-        ? undefined
-        : (navigator as unknown as MidiCapableNavigator).requestMIDIAccess;
-    if (!requestMIDIAccess) {
+    if (typeof navigator === "undefined") {
       throw new Error("Web MIDI is not available in this browser.");
     }
-    const access = await requestMIDIAccess({ sysex: false });
+    const capable = navigator as unknown as MidiCapableNavigator;
+    if (!capable.requestMIDIAccess) {
+      throw new Error("Web MIDI is not available in this browser.");
+    }
+    const access = await capable.requestMIDIAccess({ sysex: false });
     if (this.access) {
       this.access.onstatechange = null;
     }
