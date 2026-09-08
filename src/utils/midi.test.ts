@@ -22,5 +22,7 @@ describe("midi utilities", () => {
     expect(labelMidiMessage(0x90, 36, 127)).toBe("Note on 36 velocity 127");
     expect(labelMidiMessage(0x90, 36, 0)).toBe("Note off 36");
     expect(labelMidiMessage(0xb0, 1, 32)).toBe("CC 1 value 32");
+    expect(labelMidiMessage(0xd0, 65, 0)).toBe("Aftertouch value 65");
+    expect(labelMidiMessage(0xf0, 0, 0)).toBe("SysEx message");
   });
 });

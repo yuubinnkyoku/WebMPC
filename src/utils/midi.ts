@@ -14,5 +14,7 @@ export function labelMidiMessage(command: number, data1: number, data2: number):
   if (isNoteOn(command, data2)) return `Note on ${data1} velocity ${data2}`;
   if (isNoteOff(command, data2)) return `Note off ${data1}`;
   if (command === 0xb0) return `CC ${data1} value ${data2}`;
+  if ((command & 0xf0) === 0xd0) return `Aftertouch value ${data1}`;
+  if ((command & 0xf0) === 0xf0) return `SysEx message`;
   return `MIDI ${command.toString(16)} ${data1} ${data2}`;
 }
